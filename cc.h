@@ -104,4 +104,6 @@ Symbol* lookup_symbol(const char* name);
 void enter_scope(void);
 void exit_scope(void);
 
+extern int is_codegen_phase;
+
 #endif

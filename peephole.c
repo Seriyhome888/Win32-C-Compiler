@@ -70,6 +70,7 @@ static void flush_oldest(FILE* out_file) {
 }
 
 // Pass 2: Apply optimization filters and write clean code
+// Pass 2: Apply optimization filters and write clean code
 void optimize_and_emit(FILE* out_file, const char* raw_line) {
 	if (window_count >= WINDOW_SIZE) {
 		flush_oldest(out_file);
@@ -78,13 +79,11 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 	char clean[MAX_LINE] = { 0 };
 	clean_line(clean, raw_line);
 
-	// --- NEW OPTIMIZATION RULE: STRIPIING UNREFERENCED DANGLING LABELS ---
+	// --- OPTIMIZATION RULE: STRIPPING UNREFERENCED DANGLING LABELS ---
 	char lbl_name[64];
 	if (sscanf(clean, "%63[^:]:", lbl_name) == 1 && strchr(clean, ':') != NULL) {
-		// Clean label spacing boundaries
 		lbl_name[strcspn(lbl_name, " \t\r\n")] = '\0';
 
-		// If it's a compiler-generated label (starts with 'L'), check if it's dead
 		if (lbl_name[0] == 'L') {
 			int is_referenced = 0;
 			for (int i = 0; i < registered_label_count; i++) {
@@ -99,8 +98,10 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 		}
 	}
 
+	// Safely queue the new instruction line into the sliding window
 	strcpy(window[window_count++], raw_line);
 
+	// Loop to aggressively check and condense matched patterns until stable
 	while (window_count >= 1) {
 		char c2[MAX_LINE] = { 0 };
 		clean_line(c2, window[window_count - 1]);
@@ -109,6 +110,8 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 		char reg1[16], reg2[16];
 		if (sscanf(c2, "mov %15[^,], %15s", reg1, reg2) == 2) {
 			if (strcmp(reg1, reg2) == 0) {
+				// Wipe memory slot and shift down
+				memset(window[window_count - 1], 0, MAX_LINE);
 				window_count--;
 				continue;
 			}
@@ -118,20 +121,23 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 			char c1[MAX_LINE] = { 0 };
 			clean_line(c1, window[window_count - 2]);
 
-			// Rule 2: Multi-line Spill/Reload Optimization
+			// Rule 2: Multi-line Spill/Reload Optimization (mov [mem], eax; mov eax, [mem])
 			char src_reg[16], dest_mem[64], dest_reg[16], src_mem[64];
 			if (sscanf(c1, "mov %63[^,], %15s", dest_mem, src_reg) == 2 &&
 				sscanf(c2, "mov %15[^,], %63s", dest_reg, src_mem) == 2) {
 				if (strcmp(src_reg, dest_reg) == 0 && strcmp(dest_mem, src_mem) == 0) {
+					// Wipe the redundant load instruction entirely from memory
+					memset(window[window_count - 1], 0, MAX_LINE);
 					window_count--;
 					continue;
 				}
 			}
 
-			// Rule 3: Dead Unconditional Jump Stripping
+			// Rule 3: Dead Unconditional Jump Stripping (jmp L1; jmp L2)
 			char jmp_target1[64], jmp_target2[64];
 			if (sscanf(c1, "jmp %63s", jmp_target1) == 1 &&
 				sscanf(c2, "jmp %63s", jmp_target2) == 1) {
+				memset(window[window_count - 1], 0, MAX_LINE);
 				window_count--;
 				continue;
 			}
@@ -142,12 +148,13 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 			char c0[MAX_LINE] = { 0 };
 			clean_line(c0, window[window_count - 3]);
 			if (strcmp(c0, ".code") == 0 && strcmp(c2, ".code") == 0) {
+				memset(window[window_count - 1], 0, MAX_LINE);
 				window_count--;
 				continue;
 			}
 		}
 
-		break;
+		break; // Current window layout is fully stable and optimized
 	}
 }
 

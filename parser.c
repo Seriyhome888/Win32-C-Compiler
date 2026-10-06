@@ -42,21 +42,36 @@ void clear_local_symbols(void) {
 	}
 }
 
+// Define the state tracking flag inside parser.c as well if needed, or rely on extern
 Symbol* lookup_symbol(const char* name) {
 	Symbol* sym = sym_table;
+	Symbol* best_match = NULL;
+
 	while (sym) {
 		if (strcmp(sym->name, name) == 0) {
-			// During codegen, current_scope_level resets back to 0. 
-			// If a symbol has a higher scope level, it means it's a valid local variable!
-			// We allow lookups to find it if we are in the codegen phase, 
-			// OR if we are actively parsing and it belongs to an accessible scope layer.
-			if (current_scope_level == 0 || sym->scope_level <= current_scope_level) {
-				return sym;
+			if (is_codegen_phase) {
+				// DURING CODE GENERATION:
+				// Local variables are safely retained but current_scope_level is 0.
+				// We want to grab the most local variant available (highest scope_level).
+				if (best_match == NULL || sym->scope_level > best_match->scope_level) {
+					best_match = sym;
+				}
+			}
+			else {
+				// DURING PARSING PHASE:
+				// The variable must belong to an accessible outer scope layer 
+				// relative to where the parser is currently positioned.
+				if (sym->scope_level <= current_scope_level) {
+					// Always prioritize the inner-most nested definition (highest scope_level)
+					if (best_match == NULL || sym->scope_level > best_match->scope_level) {
+						best_match = sym;
+					}
+				}
 			}
 		}
 		sym = sym->next;
 	}
-	return NULL;
+	return best_match;
 }
 
 void match(TokenType type) {
@@ -404,24 +419,20 @@ ASTNode* parse_stmt(void) {
 }
 
 ASTNode* parse_program(void) {
-	// 1. Clear out localized variables from the PREVIOUS function, 
-	// leaving global identifiers/functions intact!
-	//clear_local_symbols();
+	// 1. Reset localized variables and offsets for the incoming function frame
 	local_offset = 0;
 	current_scope_level = 0;
 
-	// 2. Safely parse structural layers and catch pure metadata wrappers
+	// 2. INTERNAL LOOP: Drain ALL top-level type definitions (structs/unions) 
+	// until we reach an actual function declaration or EOF.
 	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION) {
-		ASTNode* decl = parse_struct_or_union_declaration(cur_tok.type == TOKEN_UNION);
-		if (cur_tok.type == TOKEN_SEMI) match(TOKEN_SEMI);
-
-		// If the file hits EOF right after a global structure declaration, return it
-		if (cur_tok.type == TOKEN_EOF) {
-			return decl;
+		parse_struct_or_union_declaration(cur_tok.type == TOKEN_UNION);
+		if (cur_tok.type == TOKEN_SEMI) {
+			match(TOKEN_SEMI);
 		}
 	}
 
-	// 3. Gracefully wrap up if we hit the end of the file safely
+	// 3. Gracefully handle files that end after global structure definitions
 	if (cur_tok.type == TOKEN_EOF) {
 		ASTNode* eof_node = create_node(AST_PROGRAM);
 		return eof_node;
@@ -447,8 +458,12 @@ ASTNode* parse_program(void) {
 
 	// Add function record to the global symbol table with the accurate return type!
 	Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
+	if (!func_sym) {
+		fprintf(stderr, "Out of memory during symbol allocation.\n");
+		exit(1);
+	}
 	strcpy(func_sym->name, name);
-	func_sym->type.kind = ret_kind; // <--- FIXED: Dynamic return type tracking!
+	func_sym->type.kind = ret_kind; // Dynamic return type tracking
 	func_sym->is_local = 0;
 	func_sym->scope_level = 0;
 	func_sym->next = sym_table;
@@ -456,20 +471,29 @@ ASTNode* parse_program(void) {
 
 	// 6. Parse function argument lists
 	match(TOKEN_LPAREN);
-	int arg_off = 8;
+	int arg_off = 8; // Standard EBP offset tracking for arguments (EBP+8, EBP+12...)
 	while (cur_tok.type != TOKEN_RPAREN) {
 		DataType pt;
+		memset(&pt, 0, sizeof(pt));
 		pt.kind = TYPE_INT;
-		match(TOKEN_IDENT);
+
+		if (strcmp(cur_tok.lexeme, "float") == 0) {
+			pt.kind = TYPE_FLOAT;
+		}
+		match(TOKEN_IDENT); // Consume type keyword
 
 		char p_name[64];
 		strcpy(p_name, cur_tok.lexeme);
-		match(TOKEN_IDENT);
+		match(TOKEN_IDENT); // Consume argument variable name
 
 		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
+		if (!sym) {
+			fprintf(stderr, "Out of memory during symbol allocation.\n");
+			exit(1);
+		}
 		strcpy(sym->name, p_name);
 		sym->type = pt;
-		sym->is_local = 1; // Marked local so it clears when function ends
+		sym->is_local = 1; // Marked local so it clears safely when function ends
 		sym->offset = arg_off;
 		sym->scope_level = current_scope_level;
 		arg_off += 4;
@@ -477,11 +501,13 @@ ASTNode* parse_program(void) {
 		sym->next = sym_table;
 		sym_table = sym;
 
-		if (cur_tok.type == TOKEN_COMMA) match(TOKEN_COMMA);
+		if (cur_tok.type == TOKEN_COMMA) {
+			match(TOKEN_COMMA);
+		}
 	}
 	match(TOKEN_RPAREN);
 
-	// 7. Generate execution AST structure
+	// 7. Generate execution AST structure for the function body
 	ASTNode* n = create_node(AST_FUNC_DECL);
 	strcpy(n->name, name);
 	n->body = parse_stmt();

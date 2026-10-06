@@ -8,6 +8,8 @@
 
 #define MAX_LINE 256
 
+int is_codegen_phase = 0;
+
 extern Token cur_tok;
 void optimize_and_emit(FILE* out_file, const char* raw_line);
 void flush_peephole(FILE* out_file);
@@ -54,12 +56,20 @@ int main(int argc, char* argv[]) {
 	printf(".code\n");
 	printf("extern printf:proc\n\n");
 
+	is_codegen_phase = 0;
+
 	init_lexer(f);
 	cur_tok = next_token();
 
+	is_codegen_phase = 0;
+
 	while (cur_tok.type != TOKEN_EOF) {
 		ASTNode* ast = parse_program();
+
+		is_codegen_phase = 1;
 		emit_code(ast);
+		is_codegen_phase = 0;
+
 		void clear_local_symbols(void);
 		clear_local_symbols();
 	}
