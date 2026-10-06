@@ -1,5 +1,7 @@
 #include "cc.h"
 
+int max_function_stack_bytes = 64; // Fallback minimum size boundary
+
 Token cur_tok;
 Symbol* sym_table = NULL;
 StructEnv* struct_table = NULL;
@@ -327,6 +329,93 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 }
 
 ASTNode* parse_stmt(void) {
+
+	int is_struct_var = (cur_tok.type == TOKEN_STRUCT);
+	int is_primitive_var = (cur_tok.type == TOKEN_IDENT && (strcmp(cur_tok.lexeme, "int") == 0 || strcmp(cur_tok.lexeme, "float") == 0));
+
+	if (is_primitive_var || is_struct_var) {
+		DataType vt;
+		memset(&vt, 0, sizeof(vt));
+
+		char s_name[64] = { 0 };
+
+		if (is_struct_var) {
+			match(TOKEN_STRUCT); // Consume 'struct' keyword
+			strcpy(s_name, cur_tok.lexeme);
+			match(TOKEN_IDENT);  // Consume the struct type name (e.g., "Person")
+
+			vt.kind = TYPE_STRUCT;
+			strcpy(vt.struct_name, s_name);
+		}
+		else {
+			vt.kind = (strcmp(cur_tok.lexeme, "int") == 0) ? TYPE_INT : TYPE_FLOAT;
+			match(TOKEN_IDENT); // Consumes primitive type keyword ("int" or "float")
+		}
+
+		// Check for pointer asterisks (e.g., struct Person* ptr;)
+		while (cur_tok.type == TOKEN_STAR) {
+			match(TOKEN_STAR);
+			// Wrap current type into a pointer base layer
+			DataType* base = (DataType*)calloc(1, sizeof(DataType));
+			*base = vt;
+
+			memset(&vt, 0, sizeof(vt));
+			vt.kind = TYPE_POINTER;
+			vt.base_type = base;
+		}
+
+		// Capture the actual variable name identifier
+		char name[64];
+		strcpy(name, cur_tok.lexeme);
+		match(TOKEN_IDENT); // Consumes the variable name identifier
+
+		// Calculate total base allocations multiplier width
+		int total = 1;
+		while (cur_tok.type == TOKEN_LBRACKET) {
+			match(TOKEN_LBRACKET);
+			vt.is_array = 1;
+			vt.dimensions[vt.dim_count++] = cur_tok.int_val;
+			total *= cur_tok.int_val;
+			match(TOKEN_INT_LIT);
+			match(TOKEN_RBRACKET);
+		}
+		match(TOKEN_SEMI);
+
+		// Calculate how many bytes this variable actually needs on the stack frame
+		int var_size = 4; // Default primitives and pointers take 4 bytes in 32-bit x86
+		if (vt.kind == TYPE_STRUCT && vt.base_type == NULL) { // True structural instance, not a pointer
+			struct StructEnv* env = lookup_struct(vt.struct_name);
+			if (env) {
+				var_size = env->size;
+			}
+			else {
+				printf("Semantic Error: Local variable '%s' uses undefined struct type '%s'.\n", name, vt.struct_name);
+				exit(1);
+			}
+		}
+
+		// Update stack frame tracking parameters relative to custom calculated size bounds
+		local_offset += (var_size * total);
+
+		if (local_offset > max_function_stack_bytes) {
+			max_function_stack_bytes = local_offset;
+		}
+
+		// Register the new variable inside the compiler symbol table
+		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
+		strcpy(sym->name, name);
+		sym->type = vt;
+		sym->is_local = 1;
+		sym->offset = -local_offset;
+		sym->scope_level = current_scope_level;
+		sym->next = sym_table;
+		sym_table = sym;
+
+		ASTNode* n = create_node(AST_VAR_DECL);
+		strcpy(n->name, name);
+		return n;
+	}
+
 	if (cur_tok.type == TOKEN_IDENT && (strcmp(cur_tok.lexeme, "int") == 0 || strcmp(cur_tok.lexeme, "float") == 0)) {
 		DataType vt;
 		// Safely zero-initialize the local variable structure memory cell
@@ -511,5 +600,25 @@ ASTNode* parse_program(void) {
 	ASTNode* n = create_node(AST_FUNC_DECL);
 	strcpy(n->name, name);
 	n->body = parse_stmt();
+
+
+	// NEW: Save the calculated size inside the function node's value property
+		// Round it up to a 16-byte boundary to keep the x86 stack aligned properly
+	n->int_val = (max_function_stack_bytes + 15) & ~15;
+
+	// Reset tracker back to 64 for the next function declaration
+	max_function_stack_bytes = 64;
+
 	return n;
+}
+
+struct StructEnv* lookup_struct(const char* name) {
+	struct StructEnv* env = struct_table;
+	while (env) {
+		if (strcmp(env->name, name) == 0) {
+			return env;
+		}
+		env = env->next;
+	}
+	return NULL;
 }

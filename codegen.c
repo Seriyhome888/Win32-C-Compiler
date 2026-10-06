@@ -60,12 +60,15 @@ void emit_code(ASTNode* node) {
 		break;
 
 	case AST_FUNC_DECL:
-		// Reset register allocations cleanly for the new function scope frame
 		for (int i = 0; i < 3; i++) reg_map[i] = 0;
 
 		printf("PUBLIC %s\n", node->name);
 		printf("%s proc\n", node->name);
-		printf("    push ebp\n    mov ebp, esp\n    sub esp, 64\n");
+		printf("    push ebp\n    mov ebp, esp\n");
+
+		// FIXED: Dynamically allocate exact stack frame requirements
+		printf("    sub esp, %d\n", node->int_val);
+
 		emit_code(node->body);
 		printf("    mov esp, ebp\n    pop ebp\n    ret\n%s endp\n\n", node->name);
 		break;
@@ -73,12 +76,19 @@ void emit_code(ASTNode* node) {
 	case AST_IDENT: {
 		Symbol* sym = lookup_symbol(node->name);
 		if (!sym) {
-			// FIXED: Throw a hard error instead of failing silently!
-			printf("Semantic Compiler Error: Local variable '%s' could not be resolved in the symbol table.\n", node->name);
+			printf("Semantic Compiler Error: Variable '%s' unresolved.\n", node->name);
 			exit(1);
 		}
 		int r = allocate_register();
-		printf("    mov %s, dword ptr [ebp + (%d)]\n", reg_names[r], sym->offset);
+
+		// Clean syntax formatting: choose '-' or '+' explicitly
+		if (sym->offset < 0) {
+			printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+		}
+		else {
+			printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+		}
+
 		node->int_val = r;
 		node->type = sym->type;
 		break;
@@ -121,8 +131,11 @@ void emit_code(ASTNode* node) {
 
 	case AST_BINOP: {
 		int is_float = (node->left->type.kind == TYPE_FLOAT || node->right->type.kind == TYPE_FLOAT || node->type.kind == TYPE_FLOAT);
-		emit_code(node->left); emit_code(node->right);
-		int rl = node->left->int_val, rr = node->right->int_val;
+		emit_code(node->left);
+		emit_code(node->right);
+
+		int rl = node->left->int_val;
+		int rr = node->right->int_val;
 
 		if (!is_float) {
 			if (node->op == TOKEN_PLUS) printf("    add %s, %s\n", reg_names[rl], reg_names[rr]);
@@ -187,7 +200,6 @@ void emit_code(ASTNode* node) {
 		ASTNode* base = node;
 		while (base->left->kind == AST_ARRAY_ACCESS) base = base->left;
 
-		// Clean, direct lookup. No trailing while loop needed!
 		Symbol* sym = lookup_symbol(base->left->name);
 		if (!sym) {
 			printf("\n; Backend Error: Array base identifier '%s' not found!\n", base->left->name);
@@ -199,7 +211,15 @@ void emit_code(ASTNode* node) {
 		printf("    shl %s, 2\n", reg_names[r_off]);
 
 		int r_ad = allocate_register();
-		printf("    lea %s, dword ptr [ebp + (%d)]\n", reg_names[r_ad], sym->offset);
+
+		// FIXED: Uniformly enforce correct MASM signage for reads
+		if (sym->offset < 0) {
+			printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
+		}
+		else {
+			printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
+		}
+
 		printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		printf("    mov %s, dword ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
 
@@ -209,13 +229,46 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_ASSIGN: {
-		node->int_val = -1; // FIX: Prevent garbage data register cleanup bugs!
-		emit_code(node->right);
-		int rv = node->right->int_val;
+		// 1. ADVANCED OPTIMIZATION: Check if we are capturing an address-of assignment directly (e.g., ptr = &bob;)
+		if (node->left->kind == AST_IDENT && node->right->kind == AST_UNOP && node->right->op == TOKEN_AMP) {
+			node->int_val = -1;
 
+			// Resolve the inner symbol directly instead of executing right-hand child sub-nodes
+			Symbol* right_sym = lookup_symbol(node->right->left->name);
+			Symbol* left_sym = lookup_symbol(node->left->name);
+
+			if (!right_sym || !left_sym) {
+				printf("Backend Error: Symbol resolution failure during reference mapping.\n");
+				exit(1);
+			}
+
+			int r_addr = allocate_register();
+			if (right_sym->offset < 0) {
+				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -right_sym->offset);
+			}
+			else {
+				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], right_sym->offset);
+			}
+
+			if (left_sym->offset < 0) {
+				printf("    mov dword ptr [ebp - %d], %s\n", -left_sym->offset, reg_names[r_addr]);
+			}
+			else {
+				printf("    mov dword ptr [ebp + %d], %s\n", left_sym->offset, reg_names[r_addr]);
+			}
+
+			free_register(r_addr);
+			return;
+		}
+
+		// 2. FALLBACK STANDARD PIPELINE: Evaluate the right-hand value expression first
+		node->int_val = -1;
+		emit_code(node->right);
+		int rv = node->right->int_val; // Register holding the right-hand evaluated value
+
+		// Case A: Assignment to a standard local identifier variable (e.g., x = 5;)
 		if (node->left->kind == AST_IDENT) {
 			Symbol* sym = lookup_symbol(node->left->name);
-
 			if (!sym) {
 				printf("\n; Backend Error: Assignment target variable '%s' not found!\n", node->left->name);
 				exit(1);
@@ -224,27 +277,88 @@ void emit_code(ASTNode* node) {
 			if (sym->type.kind == TYPE_FLOAT) {
 				if (node->right->type.kind == TYPE_INT) {
 					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
-					// Store float value cleanly from XMM into the local variable offset
-					printf("    movss dword ptr [ebp + (%d)], xmm0\n", sym->offset);
+					if (sym->offset < 0) {
+						printf("    movss dword ptr [ebp - %d], xmm0\n", -sym->offset);
+					}
+					else {
+						printf("    movss dword ptr [ebp + %d], xmm0\n", sym->offset);
+					}
 				}
 				else {
-					// Value is already a float stored inside the general purpose register bits
-					printf("    mov dword ptr [ebp + (%d)], %s\n", sym->offset, reg_names[rv]);
+					if (sym->offset < 0) {
+						printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
+					}
+					else {
+						printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
+					}
 				}
-				free_register(rv);
 			}
 			else {
-				printf("    mov dword ptr [ebp + (%d)], %s\n", sym->offset, reg_names[rv]);
-				free_register(rv);
+				if (sym->offset < 0) {
+					printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
+				}
+				else {
+					printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
+				}
 			}
+			free_register(rv);
 		}
-		else if (node->left->kind == AST_UNOP && node->left->op == TOKEN_STAR) { // Target is *ptr = expr;
+
+		// Case B: Pointer Dereference Target Assignment (e.g., *ptr = 99;)
+		else if (node->left->kind == AST_UNOP && node->left->op == TOKEN_STAR) {
 			emit_code(node->left->left);
-			int r_addr = node->left->left->int_val;
+			int r_addr = node->left->left->int_val; // Register containing target address memory point
+
 			printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[rv]);
 			free_register(r_addr);
 			free_register(rv);
 		}
+
+		// Case C: Structure Member Access Assignment (e.g., bob.age = 30; or ptr->age = 31;)
+		else if (node->left->kind == AST_MEMBER_ACCESS) {
+			DataType target_type;
+			int calculated_offset = 0;
+
+			if (node->left->op == TOKEN_ARROW) {
+				emit_code(node->left->left); // Load target pointer address variable container
+				int r_ptr = node->left->left->int_val;
+
+				resolve_member_offset(node->left, &calculated_offset, &target_type);
+
+				if (target_type.kind == TYPE_FLOAT && node->right->type.kind == TYPE_INT) {
+					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
+					printf("    movss dword ptr [%s + %d], xmm0\n", reg_names[r_ptr], calculated_offset);
+				}
+				else {
+					printf("    mov dword ptr [%s + %d], %s\n", reg_names[r_ptr], calculated_offset, reg_names[rv]);
+				}
+				free_register(r_ptr);
+			}
+			else { // Dot Operator Struct Layout Modification Route
+				resolve_member_offset(node->left, &calculated_offset, &target_type);
+
+				if (target_type.kind == TYPE_FLOAT && node->right->type.kind == TYPE_INT) {
+					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
+					if (calculated_offset < 0) {
+						printf("    movss dword ptr [ebp - %d], xmm0\n", -calculated_offset);
+					}
+					else {
+						printf("    movss dword ptr [ebp + %d], xmm0\n", calculated_offset);
+					}
+				}
+				else {
+					if (calculated_offset < 0) {
+						printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
+					}
+					else {
+						printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
+					}
+				}
+			}
+			free_register(rv);
+		}
+
+		// Case D: Standard / Contiguous Array Cell Target Assignment (e.g., matrix[1][2] = 88;)
 		else if (node->left->kind == AST_ARRAY_ACCESS) {
 			ASTNode* base = node->left;
 			while (base->left->kind == AST_ARRAY_ACCESS) base = base->left;
@@ -257,9 +371,15 @@ void emit_code(ASTNode* node) {
 
 			int dim = 0, r_off = -1;
 			compile_array_offset(node->left, &dim, sym, &r_off);
-			printf("    shl %s, 2\n", reg_names[r_off]);
+			printf("    shl %s, 2\n", reg_names[r_off]); // Scale index coordinate displacement (4 bytes per item)
+
 			int r_ad = allocate_register();
-			printf("    lea %s, dword ptr [ebp + (%d)]\n", reg_names[r_ad], sym->offset);
+			if (sym->offset < 0) {
+				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
+			}
+			else {
+				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
+			}
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 
 			if (sym->type.kind == TYPE_FLOAT) {
@@ -274,8 +394,12 @@ void emit_code(ASTNode* node) {
 			else {
 				printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
 			}
-			free_register(r_ad); free_register(r_off); free_register(rv);
+
+			free_register(r_ad);
+			free_register(r_off);
+			free_register(rv);
 		}
+
 		break;
 	}
 
@@ -485,6 +609,7 @@ void emit_code(ASTNode* node) {
 			free_register(rl);
 			node->int_val = r;
 		}
+
 		else if (node->op == TOKEN_AMP) { // Address-of Operator (&var)
 			if (node->left->kind == AST_IDENT) {
 				Symbol* sym = lookup_symbol(node->left->name);
@@ -493,8 +618,15 @@ void emit_code(ASTNode* node) {
 					exit(1);
 				}
 				int r = allocate_register();
-				// Load effective localized base pointer frame address: lea dest, [ebp + offset]
-				printf("    lea %s, dword ptr [ebp + (%d)]\n", reg_names[r], sym->offset);
+
+				// FIXED: Enforce clean formatting output for address resolution
+				if (sym->offset < 0) {
+					printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+				}
+				else {
+					printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+				}
+
 				free_register(rl);
 				node->int_val = r;
 			}
@@ -503,7 +635,37 @@ void emit_code(ASTNode* node) {
 				exit(1);
 			}
 		}
+
 		break;
 	}
+
+	case AST_MEMBER_ACCESS: {
+		DataType target_type;
+		int calculated_offset = 0;
+		int r = allocate_register();
+
+		if (node->op == TOKEN_ARROW) {
+			emit_code(node->left);
+			int r_ptr = node->left->int_val;
+
+			resolve_member_offset(node, &calculated_offset, &target_type);
+			printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_ptr], calculated_offset);
+			free_register(r_ptr);
+		}
+		else { // Dot Operator
+			resolve_member_offset(node, &calculated_offset, &target_type);
+			if (calculated_offset < 0) {
+				printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
+			}
+			else {
+				printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+			}
+		}
+
+		node->int_val = r;
+		node->type = target_type;
+		break;
+	}
+
 	}
 }

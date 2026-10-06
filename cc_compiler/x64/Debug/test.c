@@ -86,6 +86,34 @@ float integer_to_float_promoting()
 	return float_int_sum;
 }
 
+struct Person {
+	int id;
+	int age;
+	int salary;
+};
+
+int test_struct(int bonus) {
+	struct Person bob;
+	struct Person* ptr;
+	int final_score;
+
+	// 1. Test standard member dot-access assignments
+	bob.id = 101;
+	bob.age = 30;
+	bob.salary = 5000;
+
+	// 2. Test assigning a structure pointer target
+	ptr = &bob;
+
+	// 3. Test arrow-access mutation through pointer dereferencing
+	ptr->age = 31;
+
+	// 4. Test complex expressions integrating member values and local variables
+	final_score = bob.salary + ptr->age + bonus;
+
+	return final_score;
+}
+
 int main()
 {
 	int result;
@@ -129,6 +157,10 @@ int main()
 	float float_int_sum;
 	float_int_sum = integer_to_float_promoting();
 	printf("Mixed mode validation pipeline complete.%f\n", float_int_sum);
+
+	int final_score;
+	final_score = test_struct(10);
+	printf("Final score is: %d\n", final_score);
 
 	float a;
 	float b;

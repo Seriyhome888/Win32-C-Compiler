@@ -106,4 +106,7 @@ void exit_scope(void);
 
 extern int is_codegen_phase;
 
+struct StructEnv* lookup_struct(const char* name);
+int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type);
+
 #endif
