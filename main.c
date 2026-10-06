@@ -30,6 +30,9 @@ int main(int argc, char* argv[]) {
 	while (cur_tok.type != TOKEN_EOF) {
 		ASTNode* ast = parse_program();
 		emit_code(ast);
+
+		void clear_local_symbols(void);
+		clear_local_symbols();
 	}
 
 	printf("end\n");

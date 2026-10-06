@@ -91,6 +91,7 @@ ASTNode* parse_primary(void) {
 		n = create_node(AST_LITERAL); n->type.kind = TYPE_POINTER;
 		strcpy(n->name, cur_tok.lexeme); match(TOKEN_STRING); return n;
 	}
+
 	if (cur_tok.type == TOKEN_IDENT) {
 		char name[64]; strcpy(name, cur_tok.lexeme); match(TOKEN_IDENT);
 		if (cur_tok.type == TOKEN_LPAREN) { // Function Call
@@ -103,8 +104,23 @@ ASTNode* parse_primary(void) {
 			}
 			match(TOKEN_RPAREN); return n;
 		}
-		n = create_node(AST_IDENT); strcpy(n->name, name); return n;
+
+		// FIXED: Create identifier node and instantly bind its verified type from the symbol table
+		n = create_node(AST_IDENT);
+		strcpy(n->name, name);
+
+		Symbol* sym = lookup_symbol(name);
+		if (sym) {
+			n->type = sym->type; // Pull dimensions, pointer kind, and base type info
+		}
+		else {
+			// Fallback default for variables declared later or global externs
+			n->type.kind = TYPE_INT;
+		}
+		return n;
 	}
+
+
 	if (cur_tok.type == TOKEN_LPAREN) {
 		match(TOKEN_LPAREN); n = parse_expr(); match(TOKEN_RPAREN); return n;
 	}
@@ -202,14 +218,13 @@ ASTNode* parse_relational(void) {
 		match(cur_tok.type);
 		parent->right = parse_add();
 
-		// FIX: Force propagate type context info so codegen triggers the 'is_float' pipeline!
+		// FORCE PROPAGATION: If either compared side is a float, flag the node!
 		if (parent->left->type.kind == TYPE_FLOAT || parent->right->type.kind == TYPE_FLOAT) {
 			parent->type.kind = TYPE_FLOAT;
 		}
 		else {
 			parent->type.kind = TYPE_INT;
 		}
-
 		n = parent;
 	}
 	return n;
@@ -218,8 +233,14 @@ ASTNode* parse_relational(void) {
 ASTNode* parse_expr(void) {
 	ASTNode* n = parse_relational();
 	if (cur_tok.type == TOKEN_ASSIGN) {
-		ASTNode* parent = create_node(AST_ASSIGN); parent->left = n;
-		match(TOKEN_ASSIGN); parent->right = parse_expr(); n = parent;
+		ASTNode* parent = create_node(AST_ASSIGN);
+		parent->left = n;
+		match(TOKEN_ASSIGN);
+		parent->right = parse_expr();
+
+		// FIXED: Propagate expression type completely to prevent mismatched assignments
+		parent->type = n->type;
+		n = parent;
 	}
 	return n;
 }
@@ -351,13 +372,6 @@ ASTNode* parse_stmt(void) {
 		return n;
 	}
 
-	if (cur_tok.type == TOKEN_LBRACE) {
-		match(TOKEN_LBRACE); ASTNode* n = create_node(AST_BLOCK); ASTNode** tail = &(n->body);
-		while (cur_tok.type != TOKEN_RBRACE && cur_tok.type != TOKEN_EOF) {
-			*tail = parse_stmt(); tail = &((*tail)->next);
-		}
-		match(TOKEN_RBRACE); return n;
-	}
 	if (cur_tok.type == TOKEN_IF) {
 		ASTNode* n = create_node(AST_IF); match(TOKEN_IF); match(TOKEN_LPAREN);
 		n->cond = parse_expr(); match(TOKEN_RPAREN); n->body = parse_stmt();
@@ -392,7 +406,7 @@ ASTNode* parse_stmt(void) {
 ASTNode* parse_program(void) {
 	// 1. Clear out localized variables from the PREVIOUS function, 
 	// leaving global identifiers/functions intact!
-	clear_local_symbols();
+	//clear_local_symbols();
 	local_offset = 0;
 	current_scope_level = 0;
 

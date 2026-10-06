@@ -4,7 +4,75 @@ int calc(int a, int b) {
 	return x;
 }
 
-int main() {
+void pointer_dereference()
+{
+	// ==========================================
+	// 0. POINTER DEREFERENCING & ADDRESS-OF TEST
+	// ==========================================
+	int target_var;
+	int ptr_addr; // Act as pointer container (using standard type registers)
+	int retrieved_val;
+
+	target_var = 15;
+	ptr_addr = &target_var;      // Test Address-of instruction logic (&)
+	retrieved_val = *ptr_addr;   // Test Pointer Dereference register load (*)
+	printf("Pointer Value Verification 1: %d\n", retrieved_val);
+
+	*ptr_addr = 99;              // Test assignment through indirect reference pointer
+	retrieved_val = target_var;  // Read directly from target_var to see if it mutated
+	printf("Pointer Value Verification 2 (Mutated): %d\n", retrieved_val);
+}
+
+int while_sum_test()
+{
+	// 1. traditional while loop test
+	int j;
+	int while_sum;
+	j = 0;
+	while_sum = 0;
+	while (j < 5) {
+		while_sum = while_sum + j;
+		j = j + 1;
+	}
+
+	return while_sum;
+}
+
+int for_sum_test()
+{
+	// 2. Transformed for loop test
+	int k;
+	int for_sum;
+	for_sum = 0;
+	for (k = 0; k < 5; k = k + 1) {
+		for_sum = for_sum + k;
+	}
+
+	return for_sum;
+}
+
+int break_continue_test()
+{
+	// 3. COMPLETE BREAK & CONTINUE TEST
+	int i;
+	int total;
+	total = 0;
+
+	for (i = 0; i < 10; i = i + 1) {
+		if (i == 3) {
+			continue;
+		}
+		if (i == 6) {
+			break;
+		}
+		total = total + i;
+	}
+
+	return total;
+}
+
+int main()
+{
 	int result;
 	result = calc(2, 3);
 	printf("The final compiled result is: %d\n", result);
@@ -22,77 +90,38 @@ int main() {
 	res = arr;
 	printf("The extracted contiguous array element value is: %d\n", res);
 
-	// ==========================================
-	// 0. POINTER DEREFERENCING & ADDRESS-OF TEST
-	// ==========================================
-	int target_var;
-	int ptr_addr; // Act as pointer container (using standard type registers)
-	int retrieved_val;
+	pointer_dereference();
 
-	target_var = 15;
-	ptr_addr = &target_var;      // Test Address-of instruction logic (&)
-	retrieved_val = *ptr_addr;   // Test Pointer Dereference register load (*)
-	printf("Pointer Value Verification 1: %d\n", retrieved_val);
-
-	*ptr_addr = 99;              // Test assignment through indirect reference pointer
-	retrieved_val = target_var;  // Read directly from target_var to see if it mutated
-	printf("Pointer Value Verification 2 (Mutated): %d\n", retrieved_val);
-
-	// 1. traditional while loop test
-	int j;
 	int while_sum;
-	j = 0;
-	while_sum = 0;
-	while (j < 5) {
-		while_sum = while_sum + j;
-		j = j + 1;
-	}
+	while_sum = while_sum_test();
 	printf("The loop sum total is: %d\n", while_sum);
 
-	// 2. Transformed for loop test
-	int k;
 	int for_sum;
-	for_sum = 0;
-	for (k = 0; k < 5; k = k + 1) {
-		for_sum = for_sum + k;
-	}
+	for_sum = for_sum_test();
 	printf("The transformed for loop sum total is: %d\n", for_sum);
 
-	// 3. COMPLETE BREAK & CONTINUE TEST
-	int i;
 	int total;
-	total = 0;
-
-	for (i = 0; i < 10; i = i + 1) {
-		if (i == 3) {
-			continue;
-		}
-		if (i == 6) {
-			break;
-		}
-		total = total + i;
-	}
-
+	total = break_continue_test();
 	printf("The final total using break and continue is: %d\n", total);
 
 	int matrix[3][5];
 	int val;
-
 	// Target a nested cell coordinate index location
 	matrix[1][2] = 88;
 	val = matrix[1][2];
-
 	printf("The structural 2D matrix dynamic value is: %d\n", val);
-
 
 	int integer_val;
 	float floating_val;
+	float float_int_sum;
 
 	integer_val = 5;
 	floating_val = 3.5;
 
+	float_int_sum = integer_val + floating_val;
+
 	// MIXED MODE EXPRESSION: Implicitly promotes 'integer_val' to float before adding!
-	printf("Mixed mode validation pipeline complete.\n");
+	printf("Mixed mode validation pipeline complete.%f\n", float_int_sum);
 
 	float a;
 	float b;

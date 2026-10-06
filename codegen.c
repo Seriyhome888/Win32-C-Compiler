@@ -71,16 +71,16 @@ void emit_code(ASTNode* node) {
 		break;
 
 	case AST_IDENT: {
-		Symbol* sym = lookup_symbol(node->name); //sym_table;
-		while (sym && strcmp(sym->name, node->name) != 0) sym = sym->next;
+		Symbol* sym = lookup_symbol(node->name);
 		if (!sym) {
-			printf("Semantic Error: Variable %s undefined\n", node->name);
+			// FIXED: Throw a hard error instead of failing silently!
+			printf("Semantic Compiler Error: Local variable '%s' could not be resolved in the symbol table.\n", node->name);
 			exit(1);
 		}
 		int r = allocate_register();
 		printf("    mov %s, dword ptr [ebp + (%d)]\n", reg_names[r], sym->offset);
 		node->int_val = r;
-		node->type = sym->type; // FIX: Ensure node structure inherits the verified DataType metadata!
+		node->type = sym->type;
 		break;
 	}
 				  // Inside codegen.c -> update your AST_LITERAL block layout
@@ -90,14 +90,14 @@ void emit_code(ASTNode* node) {
 			printf("    mov %s, %d\n", reg_names[r], node->int_val);
 		}
 		else if (node->type.kind == TYPE_FLOAT) {
-
 			int lbl = gen_label();
+			// Define the raw float value in the data section
 			printf("    .data\nflt_lbl_%d REAL4 %f\n    .code\n", lbl, node->float_val);
 
-			printf("    lea %s, flt_lbl_%d\n", reg_names[r], lbl);
+			// FIXED: Load the actual value stored at the label, not the address pointer!
+			printf("    mov %s, dword ptr [flt_lbl_%d]\n", reg_names[r], lbl);
 		}
 		else if (node->type.kind == TYPE_POINTER) {
-
 			int lbl = gen_label();
 			printf("    .data\nstr_lbl_%d DB ", lbl);
 			printf("\"");
@@ -139,33 +139,33 @@ void emit_code(ASTNode* node) {
 			free_register(rr); node->int_val = rl;
 		}
 		else {
-			// HIGH PERFORMANCE SSE2 FLOATING-POINT CORE PIPELINE
+			// FIXED SSE2 FLOATING-POINT PIPELINE
 			if (node->left->type.kind == TYPE_INT) {
 				printf("    cvtsi2ss xmm0, %s\n", reg_names[rl]);
 			}
 			else {
-				if (node->left->kind == AST_IDENT) printf("    movss xmm0, dword ptr [%s]\n", reg_names[rl]);
-				else printf("    movss xmm0, dword ptr [%s]\n", reg_names[rl]);
+				// Move the raw raw float bits directly from the general-purpose register into xmm0
+				printf("    movd xmm0, %s\n", reg_names[rl]);
 			}
 
 			if (node->right->type.kind == TYPE_INT) {
 				printf("    cvtsi2ss xmm1, %s\n", reg_names[rr]);
 			}
 			else {
-				if (node->right->kind == AST_IDENT) printf("    movss xmm1, dword ptr [%s]\n", reg_names[rr]);
-				else printf("    movss xmm1, dword ptr [%s]\n", reg_names[rr]);
+				// Move the raw float bits directly from the general-purpose register into xmm1
+				printf("    movd xmm1, %s\n", reg_names[rr]);
 			}
-			free_register(rl); free_register(rr);
+			free_register(rr); // Free right register early
 
 			if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER || node->op == TOKEN_EQUAL) {
 				printf("    comiss xmm0, xmm1\n");
-				int r = allocate_register();
 				const char* bytes[] = { "al", "cl", "dl" };
-				if (node->op == TOKEN_EQUAL) printf("    sete %s\n", bytes[r]);
-				else if (node->op == TOKEN_LESS) printf("    setb %s\n", bytes[r]); // setb maps to < for floats
-				else if (node->op == TOKEN_GREATER) printf("    seta %s\n", bytes[r]); // seta maps to > for floats
-				printf("    movzx %s, %s\n", reg_names[r], bytes[r]);
-				node->int_val = r;
+				if (node->op == TOKEN_EQUAL) printf("    sete %s\n", bytes[rl]);
+				// setb maps to < for floats, seta maps to > for floats
+				else if (node->op == TOKEN_LESS) printf("    setb %s\n", bytes[rl]);
+				else if (node->op == TOKEN_GREATER) printf("    seta %s\n", bytes[rl]);
+				printf("    movzx %s, %s\n", reg_names[rl], bytes[rl]);
+				node->int_val = rl;
 				node->type.kind = TYPE_INT; // Boolean evaluation results are integers
 			}
 			else {
@@ -173,9 +173,10 @@ void emit_code(ASTNode* node) {
 				else if (node->op == TOKEN_MINUS) printf("    subss xmm0, xmm1\n");
 				else if (node->op == TOKEN_STAR) printf("    mulss xmm0, xmm1\n");
 
-				int r = allocate_register();
-				printf("    sub esp, 4\n    movss dword ptr [esp], xmm0\n    mov %s, esp\n", reg_names[r]);
-				node->int_val = r;
+				// Safely extract the float results back out into a general-purpose register
+				// WITHOUT mutating or spilling onto 'esp'
+				printf("    movd %s, xmm0\n", reg_names[rl]);
+				node->int_val = rl;
 				node->type.kind = TYPE_FLOAT;
 			}
 		}
@@ -208,29 +209,28 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_ASSIGN: {
+		node->int_val = -1; // FIX: Prevent garbage data register cleanup bugs!
 		emit_code(node->right);
 		int rv = node->right->int_val;
 
 		if (node->left->kind == AST_IDENT) {
-			// Upgrade to use our globally exposed lookup utility
 			Symbol* sym = lookup_symbol(node->left->name);
 
 			if (!sym) {
-				printf("\n; Backend Error: Assignment target variable '%s' not found in symbol table!\n", node->left->name);
-				exit(1); // Triggers clean validation termination
+				printf("\n; Backend Error: Assignment target variable '%s' not found!\n", node->left->name);
+				exit(1);
 			}
 
 			if (sym->type.kind == TYPE_FLOAT) {
 				if (node->right->type.kind == TYPE_INT) {
 					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
-					printf("    sub esp, 4\n    movss dword ptr [esp], xmm0\n");
-					printf("    movss xmm0, dword ptr [esp]\n");
-					printf("    add esp, 4\n");
+					// Store float value cleanly from XMM into the local variable offset
+					printf("    movss dword ptr [ebp + (%d)], xmm0\n", sym->offset);
 				}
 				else {
-					printf("    movss xmm0, dword ptr [%s]\n", reg_names[rv]);
+					// Value is already a float stored inside the general purpose register bits
+					printf("    mov dword ptr [ebp + (%d)], %s\n", sym->offset, reg_names[rv]);
 				}
-				printf("    movss dword ptr [ebp + (%d)], xmm0\n", sym->offset);
 				free_register(rv);
 			}
 			else {
@@ -239,13 +239,9 @@ void emit_code(ASTNode* node) {
 			}
 		}
 		else if (node->left->kind == AST_UNOP && node->left->op == TOKEN_STAR) { // Target is *ptr = expr;
-			// 1. Evaluate pointer address target expression
 			emit_code(node->left->left);
 			int r_addr = node->left->left->int_val;
-
-			// 2. Perform register indirect store
 			printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[rv]);
-
 			free_register(r_addr);
 			free_register(rv);
 		}
@@ -253,7 +249,6 @@ void emit_code(ASTNode* node) {
 			ASTNode* base = node->left;
 			while (base->left->kind == AST_ARRAY_ACCESS) base = base->left;
 
-			// Clean, direct lookup. No trailing while loop needed!
 			Symbol* sym = lookup_symbol(base->left->name);
 			if (!sym) {
 				printf("\n; Backend Error: Assignment array target '%s' not found!\n", base->left->name);
@@ -268,15 +263,19 @@ void emit_code(ASTNode* node) {
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 
 			if (sym->type.kind == TYPE_FLOAT) {
-				printf("    movss xmm0, dword ptr [%s]\n", reg_names[rv]);
-				printf("    movss dword ptr [%s], xmm0\n", reg_names[r_ad]);
+				if (node->right->type.kind == TYPE_INT) {
+					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
+					printf("    movss dword ptr [%s], xmm0\n", reg_names[r_ad]);
+				}
+				else {
+					printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
+				}
 			}
 			else {
 				printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
 			}
 			free_register(r_ad); free_register(r_off); free_register(rv);
 		}
-
 		break;
 	}
 
@@ -369,12 +368,67 @@ void emit_code(ASTNode* node) {
 	case AST_BREAK: printf("    jmp L%d\n", loop_stack[loop_stack_top - 1].end_lbl); break;
 	case AST_CONTINUE: printf("    jmp L%d\n", loop_stack[loop_stack_top - 1].cond_lbl); break;
 	case AST_RETURN: emit_code(node->left); printf("    mov eax, %s\n", reg_names[node->left->int_val]); free_register(node->left->int_val); break;
+
 	case AST_CALL: {
-		int count = 0; ASTNode* arg = node->left; int regs[16];
-		while (arg) { emit_code(arg); regs[count++] = arg->int_val; arg = arg->next; }
-		for (int i = count - 1; i >= 0; i--) { printf("    push %s\n", reg_names[regs[i]]); free_register(regs[i]); }
-		printf("    call %s\n    add esp, %d\n", node->name, count * 4);
-		int r = allocate_register(); printf("    mov %s, eax\n", reg_names[r]); node->int_val = r;
+		ASTNode* args_array[32];
+		int count = 0;
+		ASTNode* arg = node->left;
+
+		while (arg && count < 32) {
+			args_array[count++] = arg;
+			arg = arg->next;
+		}
+
+		int total_stack_bytes = 0;
+
+		// Push arguments onto the stack in REVERSE order (Right to Left)
+		for (int i = count - 1; i >= 0; i--) {
+			ASTNode* curr_arg = args_array[i];
+			emit_code(curr_arg);
+			int r_val = curr_arg->int_val;
+
+			// CRITICAL FIX: If it's an identifier, pull its true type directly from the symbol table
+			DataTypeKind arg_kind = curr_arg->type.kind;
+			if (curr_arg->kind == AST_IDENT) {
+				Symbol* sym = lookup_symbol(curr_arg->name);
+				if (sym) {
+					arg_kind = sym->type.kind;
+				}
+			}
+
+			// Perform the push layout using the verified type context data
+			if (arg_kind == TYPE_FLOAT) {
+				// 1. Move the 32-bit raw float bits to XMM
+				printf("    movd xmm0, %s\n", reg_names[r_val]);
+
+				// 2. Perform hardware promotion from 32-bit Float to 64-bit Double
+				printf("    cvtss2sd xmm0, xmm0\n");
+
+				// 3. Substack allocation space for the 8-byte double payload
+				printf("    sub esp, 8\n");
+
+				// 4. Move 64-bit double directly onto the stack layout frame
+				printf("    movsd qword ptr [esp], xmm0\n");
+
+				total_stack_bytes += 8;
+			}
+			else {
+				// Standard 32-bit Integer variable or String base memory address label pointer
+				printf("    push %s\n", reg_names[r_val]);
+				total_stack_bytes += 4;
+			}
+			free_register(r_val);
+		}
+
+		printf("    call %s\n", node->name);
+
+		if (total_stack_bytes > 0) {
+			printf("    add esp, %d\n", total_stack_bytes);
+		}
+
+		int r = allocate_register();
+		printf("    mov %s, eax\n", reg_names[r]);
+		node->int_val = r;
 		break;
 	}
 
