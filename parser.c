@@ -428,11 +428,15 @@ ASTNode* parse_program(void) {
 	}
 
 	// 4. Safely evaluate the function return type identifier
+	DataTypeKind ret_kind = TYPE_INT; // Default fallback
 	if (cur_tok.type == TOKEN_IDENT) {
+		if (strcmp(cur_tok.lexeme, "float") == 0) {
+			ret_kind = TYPE_FLOAT;
+		}
 		match(TOKEN_IDENT);
 	}
 	else {
-		printf("Parsing Error: Expected function return type or declaration at global scope, got: %s\n", cur_tok.lexeme);
+		printf("Parsing Error: Expected function return type, got: %s\n", cur_tok.lexeme);
 		exit(1);
 	}
 
@@ -441,11 +445,11 @@ ASTNode* parse_program(void) {
 	strcpy(name, cur_tok.lexeme);
 	match(TOKEN_IDENT);
 
-	// Add function record to the global symbol table so it can be called elsewhere!
+	// Add function record to the global symbol table with the accurate return type!
 	Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
 	strcpy(func_sym->name, name);
-	func_sym->type.kind = TYPE_INT; // Default return tracking
-	func_sym->is_local = 0;         // Set explicitly as global function
+	func_sym->type.kind = ret_kind; // <--- FIXED: Dynamic return type tracking!
+	func_sym->is_local = 0;
 	func_sym->scope_level = 0;
 	func_sym->next = sym_table;
 	sym_table = func_sym;

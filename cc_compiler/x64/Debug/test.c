@@ -71,6 +71,21 @@ int break_continue_test()
 	return total;
 }
 
+float integer_to_float_promoting()
+{
+	int integer_val;
+	float floating_val;
+	float float_int_sum;
+
+	integer_val = 5;
+	floating_val = 3.5;
+
+	float_int_sum = integer_val + floating_val;
+
+	// MIXED MODE EXPRESSION: Implicitly promotes 'integer_val' to float before adding!
+	return float_int_sum;
+}
+
 int main()
 {
 	int result;
@@ -111,16 +126,8 @@ int main()
 	val = matrix[1][2];
 	printf("The structural 2D matrix dynamic value is: %d\n", val);
 
-	int integer_val;
-	float floating_val;
 	float float_int_sum;
-
-	integer_val = 5;
-	floating_val = 3.5;
-
-	float_int_sum = integer_val + floating_val;
-
-	// MIXED MODE EXPRESSION: Implicitly promotes 'integer_val' to float before adding!
+	float_int_sum = integer_to_float_promoting();
 	printf("Mixed mode validation pipeline complete.%f\n", float_int_sum);
 
 	float a;

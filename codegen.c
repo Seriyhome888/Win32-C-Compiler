@@ -367,7 +367,28 @@ void emit_code(ASTNode* node) {
 
 	case AST_BREAK: printf("    jmp L%d\n", loop_stack[loop_stack_top - 1].end_lbl); break;
 	case AST_CONTINUE: printf("    jmp L%d\n", loop_stack[loop_stack_top - 1].cond_lbl); break;
-	case AST_RETURN: emit_code(node->left); printf("    mov eax, %s\n", reg_names[node->left->int_val]); free_register(node->left->int_val); break;
+
+	case AST_RETURN: {
+		emit_code(node->left);
+		int r_val = node->left->int_val;
+
+		if (node->left->type.kind == TYPE_FLOAT) {
+			// Allocate a 4-byte temporary space on the stack to bridge to the FPU stack
+			printf("    sub esp, 4\n");
+			printf("    mov dword ptr [esp], %s\n", reg_names[r_val]);
+
+			// FLD loads the 32-bit float from memory onto the top of the FPU stack ST(0)
+			printf("    fld dword ptr [esp]\n");
+			printf("    add esp, 4\n");
+		}
+		else {
+			// Standard integer or pointer return route
+			printf("    mov eax, %s\n", reg_names[r_val]);
+		}
+
+		free_register(r_val);
+		break;
+	}
 
 	case AST_CALL: {
 		ASTNode* args_array[32];
@@ -427,7 +448,28 @@ void emit_code(ASTNode* node) {
 		}
 
 		int r = allocate_register();
-		printf("    mov %s, eax\n", reg_names[r]);
+
+
+		// FIXED: Determine if the called function is registered as returning a float
+		Symbol* func_sym = lookup_symbol(node->name);
+		if (func_sym && func_sym->type.kind == TYPE_FLOAT) {
+			// Pull the float off the hardware FPU stack ST(0) into a temporary stack slot
+			printf("    sub esp, 4\n");
+			printf("    fstp dword ptr [esp]\n");
+
+			// Move the raw float bits back into our managed general purpose register
+			printf("    mov %s, dword ptr [esp]\n", reg_names[r]);
+			printf("    add esp, 4\n");
+
+			node->type.kind = TYPE_FLOAT; // Ensure the call expression node is flagged as a float!
+		}
+		else {
+			// Standard integer or pointer payload collection
+			printf("    mov %s, eax\n", reg_names[r]);
+		}
+		//printf("    mov %s, eax\n", reg_names[r]);
+
+
 		node->int_val = r;
 		break;
 	}
