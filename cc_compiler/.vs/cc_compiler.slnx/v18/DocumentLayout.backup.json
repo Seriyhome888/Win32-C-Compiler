@@ -1,0 +1,150 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "D:\\Win32-C-Compiler-Dev\\cc_compiler\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\Win32-C-Compiler-Dev\\cc_compiler\\x64\\Debug\\test.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:x64\\Debug\\test.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{025FA0BA-9DCB-4DE9-9A61-44A8CA98D76B}|cc_compiler.vcxproj|D:\\Win32-C-Compiler-Dev\\parser.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{025FA0BA-9DCB-4DE9-9A61-44A8CA98D76B}|cc_compiler.vcxproj|D:\\Win32-C-Compiler-Dev\\codegen.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{025FA0BA-9DCB-4DE9-9A61-44A8CA98D76B}|cc_compiler.vcxproj|D:\\Win32-C-Compiler-Dev\\main.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{025FA0BA-9DCB-4DE9-9A61-44A8CA98D76B}|cc_compiler.vcxproj|D:\\Win32-C-Compiler-Dev\\cc.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{025FA0BA-9DCB-4DE9-9A61-44A8CA98D76B}|cc_compiler.vcxproj|D:\\Win32-C-Compiler-Dev\\lexer.c||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|D:\\Win32-C-Compiler-Dev\\cc_compiler\\x64\\Debug\\utils.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:x64\\Debug\\utils.h||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 1,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedHeight": 183,
+          "SelectedChildIndex": 5,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:128:0:{116d2292-e37d-41cd-a077-ebacac4c8cc4}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:128:0:{1fc202d4-d401-403c-9834-5b218574bb67}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:129:0:{1fc202d4-d401-403c-9834-5b218574bb67}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{1c4feeaa-4718-4aa9-859d-94ce25d182ba}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
+              "Title": "utils.h",
+              "DocumentMoniker": "D:\\Win32-C-Compiler-Dev\\cc_compiler\\x64\\Debug\\utils.h",
+              "RelativeDocumentMoniker": "x64\\Debug\\utils.h",
+              "ToolTip": "D:\\Win32-C-Compiler-Dev\\cc_compiler\\x64\\Debug\\utils.h",
+              "RelativeToolTip": "x64\\Debug\\utils.h",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAcAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
+              "WhenOpened": "2026-10-05T20:18:14.005Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "test.c",
+              "DocumentMoniker": "D:\\Win32-C-Compiler-Dev\\cc_compiler\\x64\\Debug\\test.c",
+              "RelativeDocumentMoniker": "x64\\Debug\\test.c",
+              "ToolTip": "D:\\Win32-C-Compiler-Dev\\cc_compiler\\x64\\Debug\\test.c",
+              "RelativeToolTip": "x64\\Debug\\test.c",
+              "ViewState": "AgIAABYAAAAAAAAAAAAowCEAAABLAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2026-10-05T18:33:55.05Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "parser.c",
+              "DocumentMoniker": "D:\\Win32-C-Compiler-Dev\\parser.c",
+              "RelativeDocumentMoniker": "..\\parser.c",
+              "ToolTip": "D:\\Win32-C-Compiler-Dev\\parser.c",
+              "RelativeToolTip": "..\\parser.c",
+              "ViewState": "AgIAAIgAAAAAAAAAAAAAwJwAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2026-10-05T18:05:00.261Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "lexer.c",
+              "DocumentMoniker": "D:\\Win32-C-Compiler-Dev\\lexer.c",
+              "RelativeDocumentMoniker": "..\\lexer.c",
+              "ToolTip": "D:\\Win32-C-Compiler-Dev\\lexer.c",
+              "RelativeToolTip": "..\\lexer.c",
+              "ViewState": "AgIAABgAAAAAAAAAAAAAACsAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2026-10-05T17:29:51.916Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "codegen.c",
+              "DocumentMoniker": "D:\\Win32-C-Compiler-Dev\\codegen.c",
+              "RelativeDocumentMoniker": "..\\codegen.c",
+              "ToolTip": "D:\\Win32-C-Compiler-Dev\\codegen.c",
+              "RelativeToolTip": "..\\codegen.c",
+              "ViewState": "AgIAAOkAAAAAAAAAAAAAwPoAAAADAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2026-10-05T16:26:47.123Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "cc.h",
+              "DocumentMoniker": "D:\\Win32-C-Compiler-Dev\\cc.h",
+              "RelativeDocumentMoniker": "..\\cc.h",
+              "ToolTip": "D:\\Win32-C-Compiler-Dev\\cc.h",
+              "RelativeToolTip": "..\\cc.h",
+              "ViewState": "AgIAAFEAAAAAAAAAAAAAAFwAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000680|",
+              "WhenOpened": "2026-10-05T16:05:10.128Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "main.c",
+              "DocumentMoniker": "D:\\Win32-C-Compiler-Dev\\main.c",
+              "RelativeDocumentMoniker": "..\\main.c",
+              "ToolTip": "D:\\Win32-C-Compiler-Dev\\main.c",
+              "RelativeToolTip": "..\\main.c",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAYAAAAiAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000423|",
+              "WhenOpened": "2026-10-05T16:07:36.127Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
