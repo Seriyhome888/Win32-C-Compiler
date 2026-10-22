@@ -1,6 +1,8 @@
 #include "cc.h"
 #include <stdarg.h>
 
+static const char* reg_names_8[] = { "al", "cl", "dl" };
+
 // Track the current function's dynamic spilling offset allocation bounds
 static int spill_stack_offset = 0;
 #define MAX_SPILLS 64
@@ -129,25 +131,33 @@ void emit_code(ASTNode* node) {
 
 	case AST_IDENT: {
 		Symbol* sym = lookup_symbol(node->name);
-		if (!sym) {
-			printf("Semantic Compiler Error: Variable '%s' unresolved.\n", node->name);
-			exit(1);
-		}
-		int r = allocate_register();
+		if (!sym) { printf("Semantic Error: '%s' unresolved.\n", node->name); exit(1); }
 
-		// Clean syntax formatting: choose '-' or '+' explicitly
-		if (sym->offset < 0) {
-			printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+		int r = allocate_register();
+		node->type = sym->type;
+		node->int_val = r;
+
+		if (sym->type.kind == TYPE_CHAR) {
+			// Clean single-byte read using move-with-sign-extension (movsx) or zero-extension (movzx)
+			if (sym->offset < 0) {
+				printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+			}
+			else {
+				printf("    movzx %s, byte ptr [ebp + %d]\n", reg_names[r], sym->offset);
+			}
 		}
 		else {
-			printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+			// Standard 32-bit integer read pipeline
+			if (sym->offset < 0) {
+				printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+			}
+			else {
+				printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+			}
 		}
-
-		node->int_val = r;
-		node->type = sym->type;
 		break;
 	}
-				  // Inside codegen.c -> update your AST_LITERAL block layout
+				  
 	case AST_LITERAL: {
 		int r = allocate_register();
 		if (node->type.kind == TYPE_INT) {
@@ -335,7 +345,16 @@ void emit_code(ASTNode* node) {
 				exit(1);
 			}
 
-			if (sym->type.kind == TYPE_FLOAT) {
+			if (sym->type.kind == TYPE_CHAR) {
+				// Use 8-bit sub-register array to write exactly 1 byte down to stack memory!
+				if (sym->offset < 0) {
+					printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, reg_names_8[rv]);
+				}
+				else {
+					printf("    mov byte ptr [ebp + %d], %s\n", sym->offset, reg_names_8[rv]);
+				}
+			}
+			else if (sym->type.kind == TYPE_FLOAT) {
 				if (node->right->type.kind == TYPE_INT) {
 					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
 					if (sym->offset < 0) {

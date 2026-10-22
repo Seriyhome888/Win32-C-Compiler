@@ -152,6 +152,18 @@ int complex_math_test() {
 	return result;
 }
 
+int char_test() {
+	char a;
+	char b;
+	int result;
+
+	a = 65; // ASCII code for 'A'
+	b = 5;
+
+	result = a + b; // Test integral promotion and addition
+	return result;
+}
+
 int main()
 {
 	int result;
@@ -224,6 +236,10 @@ int main()
 	int complex_math_test_result;
 	complex_math_test_result = complex_math_test();
 	printf("complex math test result is: %d\n", complex_math_test_result);
+
+	int char_test_result;
+	char_test_result = char_test();
+	printf("char test result is: %d\n", char_test_result);
 
 	return 0;
 }

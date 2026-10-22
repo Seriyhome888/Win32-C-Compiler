@@ -347,7 +347,9 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 ASTNode* parse_stmt(void) {
 
 	int is_struct_var = (cur_tok.type == TOKEN_STRUCT);
-	int is_primitive_var = (cur_tok.type == TOKEN_IDENT && (strcmp(cur_tok.lexeme, "int") == 0 || strcmp(cur_tok.lexeme, "float") == 0));
+	int is_primitive_var = (cur_tok.type == TOKEN_IDENT && (strcmp(cur_tok.lexeme, "int") == 0 || strcmp(cur_tok.lexeme, "float") == 0))
+		||
+		(cur_tok.type == TOKEN_CHAR);
 
 	if (is_primitive_var || is_struct_var) {
 		DataType vt;
@@ -364,8 +366,14 @@ ASTNode* parse_stmt(void) {
 			strcpy(vt.struct_name, s_name);
 		}
 		else {
-			vt.kind = (strcmp(cur_tok.lexeme, "int") == 0) ? TYPE_INT : TYPE_FLOAT;
-			match(TOKEN_IDENT); // Consumes primitive type keyword ("int" or "float")
+			if (cur_tok.type == TOKEN_CHAR) {
+				vt.kind = TYPE_CHAR;
+				match(TOKEN_CHAR);
+			}
+			else {
+				vt.kind = (strcmp(cur_tok.lexeme, "int") == 0) ? TYPE_INT : TYPE_FLOAT;
+				match(TOKEN_IDENT); // Consumes primitive type keyword ("int" or "float")
+			}
 		}
 
 		// Check for pointer asterisks (e.g., struct Person* ptr;)
@@ -399,7 +407,10 @@ ASTNode* parse_stmt(void) {
 
 		// Calculate how many bytes this variable actually needs on the stack frame
 		int var_size = 4; // Default primitives and pointers take 4 bytes in 32-bit x86
-		if (vt.kind == TYPE_STRUCT && vt.base_type == NULL) { // True structural instance, not a pointer
+		if (vt.kind == TYPE_CHAR && vt.base_type == NULL) {
+			var_size = 1; // True char instance occupies exactly 1 byte!
+		}
+		else if (vt.kind == TYPE_STRUCT && vt.base_type == NULL) { // True structural instance, not a pointer
 			struct StructEnv* env = lookup_struct(vt.struct_name);
 			if (env) {
 				var_size = env->size;
