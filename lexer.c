@@ -98,6 +98,9 @@ Token next_token(void) {
 		else if (strcmp(tok.lexeme, "return") == 0) tok.type = TOKEN_RETURN;
 		else if (strcmp(tok.lexeme, "void") == 0) tok.type = TOKEN_VOID;
 		else if (strcmp(tok.lexeme, "char") == 0) tok.type = TOKEN_CHAR;
+		else if (strcmp(tok.lexeme, "switch") == 0) tok.type = TOKEN_SWITCH;   
+		else if (strcmp(tok.lexeme, "case") == 0) tok.type = TOKEN_CASE;       
+		else if (strcmp(tok.lexeme, "default") == 0) tok.type = TOKEN_DEFAULT; 
 		else tok.type = TOKEN_IDENT;
 		return tok;
 	}
@@ -126,6 +129,7 @@ Token next_token(void) {
 	case '+': tok.type = TOKEN_PLUS; ch = fgetc(src_file); break;
 	case '*': tok.type = TOKEN_STAR; ch = fgetc(src_file); break;
 	case '&': tok.type = TOKEN_AMP; ch = fgetc(src_file); break;
+	case ':': tok.type = TOKEN_COLON; ch = fgetc(src_file); break;
 	case ';': tok.type = TOKEN_SEMI; ch = fgetc(src_file); break;
 	case ',': tok.type = TOKEN_COMMA; ch = fgetc(src_file); break;
 	case '.': tok.type = TOKEN_PERIOD; ch = fgetc(src_file); break;

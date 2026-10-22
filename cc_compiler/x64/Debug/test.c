@@ -170,6 +170,24 @@ void string_pointer_test() {
 	printf(message);
 }
 
+int switch_test(int val) {
+	int out;
+	switch (val) {
+	case 1:
+		out = 10;
+		break;
+	case 2:
+		out = 20;
+		break;
+	case 74:
+		out = 47;
+		break;
+	default:
+		out = 99;
+	}
+	return out;
+}
+
 int main()
 {
 	int result;
@@ -248,6 +266,10 @@ int main()
 	printf("char test result is: %d\n", char_test_result);
 
 	string_pointer_test();
+
+	printf("switch test result for 2 is: %d\n", switch_test(2));
+	printf("switch test result for 12 is: %d\n", switch_test(12));
+	printf("switch test result for 74 is: %d\n", switch_test(74));
 
 	return 0;
 }

@@ -525,6 +525,36 @@ ASTNode* parse_stmt(void) {
 		ASTNode* n = create_node(AST_RETURN); match(TOKEN_RETURN); n->left = parse_expr(); match(TOKEN_SEMI); return n;
 	}
 
+	if (cur_tok.type == TOKEN_SWITCH) {
+		ASTNode* n = create_node(AST_SWITCH);
+		match(TOKEN_SWITCH);
+		match(TOKEN_LPAREN);
+		n->left = parse_expr(); // The central controlling condition expression
+		match(TOKEN_RPAREN);
+		n->body = parse_stmt(); // Usually an AST_BLOCK containing cases
+		return n;
+	}
+
+	if (cur_tok.type == TOKEN_CASE) {
+		ASTNode* n = create_node(AST_CASE);
+		match(TOKEN_CASE);
+		if (cur_tok.type != TOKEN_INT_LIT) {
+			printf("Syntax Error: C89 requires case labels to be constant integer literals.\n");
+			exit(1);
+		}
+		n->int_val = cur_tok.int_val; // Capture the constant value
+		match(TOKEN_INT_LIT);
+		match(TOKEN_COLON);
+		return n;
+	}
+
+	if (cur_tok.type == TOKEN_DEFAULT) {
+		ASTNode* n = create_node(AST_DEFAULT);
+		match(TOKEN_DEFAULT);
+		match(TOKEN_COLON);
+		return n;
+	}
+
 	ASTNode* n = parse_expr();
 	match(TOKEN_SEMI);
 

@@ -157,7 +157,7 @@ void emit_code(ASTNode* node) {
 		}
 		break;
 	}
-				  
+
 	case AST_LITERAL: {
 		int r = allocate_register();
 		if (node->type.kind == TYPE_INT) {
@@ -752,6 +752,67 @@ void emit_code(ASTNode* node) {
 
 		node->int_val = r;
 		node->type = target_type;
+		break;
+	}
+
+	case AST_SWITCH: {
+		int l_end = gen_label();
+		int l_default = -1;
+
+		// Push this switch block onto the loop stack frame so 'break;' knows where to jump!
+		loop_stack[loop_stack_top++] = (LoopFrame){ -1, l_end };
+
+		// Compile the controlling condition expression
+		emit_code(node->left);
+		int r_cond = node->left->int_val; // Register holding the evaluated condition value
+
+		// --- PASS 1: EMIT THE CONDITIONAL JUMP CASCADE ---
+		printf("    ; --- BEGIN SWITCH JUMP CASCADE --- \n");
+		ASTNode* s = (node->body && node->body->kind == AST_BLOCK) ? node->body->body : node->body;
+		while (s) {
+			if (s->kind == AST_CASE) {
+				s->op = gen_label(); // Generate and assign an assembly label ID to this specific case node
+				printf("    cmp %s, %d\n", reg_names[r_cond], s->int_val);
+				printf("    je L%d\n", s->op);
+			}
+			else if (s->kind == AST_DEFAULT) {
+				s->op = gen_label(); // Generate label ID for default
+				l_default = s->op;
+			}
+			s = s->next;
+		}
+		free_register(r_cond); // Free condition register immediately after the cascade pass
+
+		// If a default block exists, jump to it if no cases matched. Otherwise, jump to the end.
+		if (l_default != -1) {
+			printf("    jmp L%d\n", l_default);
+		}
+		else {
+			printf("    jmp L%d\n", l_end);
+		}
+
+		// --- PASS 2: GENERATE INNER STATEMENTS BODY ---
+		printf("    ; --- BEGIN SWITCH BODY EXECUTION --- \n");
+		s = (node->body && node->body->kind == AST_BLOCK) ? node->body->body : node->body;
+		while (s) {
+			if (s->kind == AST_CASE || s->kind == AST_DEFAULT) {
+				// Emit the matching execution entry target label point
+				printf("L%d:\n", s->op);
+			}
+			else {
+				emit_code(s);
+				// Clean up leaking tracking registers inside statement boundaries
+				if (s->int_val >= 0 && s->int_val < 3) {
+					free_register(s->int_val);
+					s->int_val = -1;
+				}
+			}
+			s = s->next;
+		}
+
+		// Emit terminating exit target frame boundary
+		printf("L%d:\n", l_end);
+		loop_stack_top--; // Pop switch frame off the stack
 		break;
 	}
 
