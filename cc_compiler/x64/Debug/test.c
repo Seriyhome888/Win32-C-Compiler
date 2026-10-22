@@ -1,3 +1,17 @@
+#define INITIAL_VALUE 42
+#define STEP_INCREMENT 5
+
+int define_test() {
+	int total_score;
+	int index_counter;
+
+	total_score = INITIAL_VALUE;
+	index_counter = STEP_INCREMENT;
+
+	total_score = total_score + index_counter;
+	return total_score;
+}
+
 int calc(int a, int b) {
 	int x;
 	x = a + b;
@@ -174,6 +188,10 @@ int main()
 	else {
 		printf("Float Verification Failed!\n");
 	}
+
+	int total_score;
+	total_score = define_test();
+	printf("sum of defined is: %d\n", total_score);
 
 	return 0;
 }

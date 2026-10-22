@@ -14,6 +14,9 @@ extern Token cur_tok;
 void optimize_and_emit(FILE* out_file, const char* raw_line);
 void flush_peephole(FILE* out_file);
 
+// Declare the preprocessor entry method from preprocessor.c
+extern int run_preprocessor(const char* input_filename, const char* output_filename);
+
 int main(int argc, char* argv[]) {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
@@ -24,11 +27,27 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
+	// --- STEP 1: RUN THE STANDALONE PREPROCESSOR ---
+	const char* staging_file = "cc_preprocessed_source.i";
+	if (!run_preprocessor(argv[1], staging_file)) {
+		fprintf(stderr, "Fatal Error: Macro preprocessing phase failed.\n");
+		return 1;
+	}
+
+	// --- STEP 2: FEED THE PREPROCESSED STREAM INTO THE COMPILER ---
+	FILE* f = fopen(staging_file, "r");
+	if (!f) {
+		fprintf(stderr, "Error: Could not open preprocessed staging stream.\n");
+		return 1;
+	}
+
+	/*
 	FILE* f = fopen(argv[1], "r");
 	if (!f) {
 		fprintf(stderr, "Error: Could not open source file %s\n", argv[1]);
 		return 1;
 	}
+	*/
 
 	// Determine where the final optimized code goes (defaults to console screen)
 	FILE* final_output = stdout;
@@ -108,6 +127,7 @@ int main(int argc, char* argv[]) {
 
 	fclose(raw_asm);
 	fclose(f);
+	remove(staging_file);
 	if (final_output != stdout) fclose(final_output);
 	remove("cc_compiler_temp.asm");
 
