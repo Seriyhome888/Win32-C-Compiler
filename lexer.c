@@ -96,6 +96,7 @@ Token next_token(void) {
 		else if (strcmp(tok.lexeme, "struct") == 0) tok.type = TOKEN_STRUCT;
 		else if (strcmp(tok.lexeme, "union") == 0) tok.type = TOKEN_UNION;
 		else if (strcmp(tok.lexeme, "return") == 0) tok.type = TOKEN_RETURN;
+		else if (strcmp(tok.lexeme, "void") == 0) tok.type = TOKEN_VOID;
 		else tok.type = TOKEN_IDENT;
 		return tok;
 	}

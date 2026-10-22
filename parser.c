@@ -527,16 +527,23 @@ ASTNode* parse_program(void) {
 		return eof_node;
 	}
 
-	// 4. Safely evaluate the function return type identifier
+	// 4. Safely evaluate the function return type identifier (Allowing IDENT or VOID)
 	DataTypeKind ret_kind = TYPE_INT; // Default fallback
-	if (cur_tok.type == TOKEN_IDENT) {
-		if (strcmp(cur_tok.lexeme, "float") == 0) {
+	if (cur_tok.type == TOKEN_IDENT || cur_tok.type == TOKEN_VOID) {
+		if (cur_tok.type == TOKEN_IDENT && strcmp(cur_tok.lexeme, "float") == 0) {
 			ret_kind = TYPE_FLOAT;
 		}
-		match(TOKEN_IDENT);
+		else if (cur_tok.type == TOKEN_VOID) {
+			// Optional: mapping a custom type kind for void if you expand cc.h later,
+			// otherwise TYPE_INT acts as the default fallback for standard stack tracking.
+			ret_kind = TYPE_INT;
+		}
+
+		// Consume whichever token type was matched
+		match(cur_tok.type);
 	}
 	else {
-		printf("Parsing Error: Expected function return type, got: %s\n", cur_tok.lexeme);
+		printf("Parsing Error: Expected function return type (ident or void), got: %s\n", cur_tok.lexeme);
 		exit(1);
 	}
 
