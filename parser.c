@@ -626,8 +626,9 @@ ASTNode* parse_program(void) {
 
 
 	// NEW: Save the calculated size inside the function node's value property
-		// Round it up to a 16-byte boundary to keep the x86 stack aligned properly
-	n->int_val = (max_function_stack_bytes + 15) & ~15;
+// Round it up to a 16-byte boundary to keep the x86 stack aligned properly, 
+// and add a 16-byte safety pad specifically to accommodate temporary register spilling pools!
+	n->int_val = ((max_function_stack_bytes + 15) & ~15) + 16;
 
 	// Reset tracker back to 64 for the next function declaration
 	max_function_stack_bytes = 64;

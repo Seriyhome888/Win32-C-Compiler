@@ -1,20 +1,54 @@
 #include "cc.h"
 #include <stdarg.h>
 
+// Track the current function's dynamic spilling offset allocation bounds
+static int spill_stack_offset = 0;
+#define MAX_SPILLS 64
+static int spill_offsets[3] = { 0 }; // Stores stack offset for each spilled register (-1 if not spilled)
+
 static int reg_map[3] = { 0 };
 static const char* reg_names[] = { "eax", "ecx", "edx" };
 
 static int label_id = 0;
 int gen_label(void) { return label_id++; }
 
+// Tracks which register was explicitly spilled to handle automated recovery layers
+static int was_spilled[3] = { 0 };
+
 int allocate_register(void) {
+	// 1. STANDARD PASS: Check if a register is immediately available
 	for (int i = 0; i < 3; i++) {
-		if (!reg_map[i]) { reg_map[i] = 1; return i; }
+		if (!reg_map[i]) {
+			reg_map[i] = 1;
+			was_spilled[i] = 0;
+			return i;
+		}
 	}
-	printf("Backend Error: Out of general purpose registers.\n");
-	exit(1);
+
+	// 2. SPILL PASS: All registers are full! Select register 2 ("edx") as the spill victim
+	int victim = 2;
+
+	// Dynamically expand the function's stack frame requirements downward by 4 bytes
+	spill_stack_offset += 4;
+	spill_offsets[victim] = spill_stack_offset;
+
+	// Emit the physical assembly instruction to spill the register onto the stack frame safely
+	printf("    ; --- REGISTER SPILL OUT TRIGGERED --- \n");
+	printf("    mov dword ptr [ebp - %d], %s\n", spill_stack_offset, reg_names[victim]);
+
+	// Mark the victim register as structurally managed and return it to the caller
+	reg_map[victim] = 1;
+	was_spilled[victim] = 1;
+	return victim;
 }
-void free_register(int r) { if (r >= 0 && r < 3) reg_map[r] = 0; }
+
+void free_register(int r) {
+	if (r >= 0 && r < 3) {
+		reg_map[r] = 0;
+		was_spilled[r] = 0;
+		spill_offsets[r] = 0;
+	}
+}
 
 typedef struct { int cond_lbl; int end_lbl; } LoopFrame;
 static LoopFrame loop_stack[32];
@@ -47,6 +81,25 @@ void compile_array_offset(ASTNode* node, int* dim, Symbol* sym, int* r_out) {
 	}
 }
 
+// Ensures a register's original content is restored if it was spilled to the stack frame
+int ensure_register_loaded(int r) {
+	if (r >= 0 && r < 3 && spill_offsets[r] > 0) {
+		printf("    ; --- REGISTER UN-SPILL RECOVERY --- \n");
+
+		// Allocate a fresh target register to recover the data into
+		reg_map[r] = 0; // Temporarily unlock the victim map boundary
+		int target_reg = allocate_register();
+
+		// Emit the assembly instruction to read the spilled data back into an active register
+		printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[target_reg], spill_offsets[r]);
+
+		// Clear out tracking values for this specific slot now that it's recovered
+		spill_offsets[r] = 0;
+		return target_reg;
+	}
+	return r;
+}
+
 void emit_code(ASTNode* node) {
 	if (!node) return;
 
@@ -60,13 +113,14 @@ void emit_code(ASTNode* node) {
 		break;
 
 	case AST_FUNC_DECL:
-		for (int i = 0; i < 3; i++) reg_map[i] = 0;
+		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
+		spill_stack_offset = 0; // Reset spill tracking allocator for the incoming function layout frame
 
 		printf("PUBLIC %s\n", node->name);
 		printf("%s proc\n", node->name);
 		printf("    push ebp\n    mov ebp, esp\n");
 
-		// FIXED: Dynamically allocate exact stack frame requirements
+		// Dynamic allocation including the base calculated requirements
 		printf("    sub esp, %d\n", node->int_val);
 
 		emit_code(node->body);
@@ -131,11 +185,17 @@ void emit_code(ASTNode* node) {
 
 	case AST_BINOP: {
 		int is_float = (node->left->type.kind == TYPE_FLOAT || node->right->type.kind == TYPE_FLOAT || node->type.kind == TYPE_FLOAT);
-		emit_code(node->left);
-		emit_code(node->right);
 
+		// 1. Evaluate left child node tree
+		emit_code(node->left);
 		int rl = node->left->int_val;
+
+		// 2. Evaluate right child node tree (this step can trigger a spill if expression is deep!)
+		emit_code(node->right);
 		int rr = node->right->int_val;
+
+		// 3. CRITICAL HOOK: Verify if our left register got spilled during the right child's generation pass!
+		rl = ensure_register_loaded(rl);
 
 		if (!is_float) {
 			if (node->op == TOKEN_PLUS) printf("    add %s, %s\n", reg_names[rl], reg_names[rr]);
@@ -149,7 +209,8 @@ void emit_code(ASTNode* node) {
 				else if (node->op == TOKEN_GREATER) printf("    setg %s\n", bytes[rl]);
 				printf("    movzx %s, %s\n", reg_names[rl], bytes[rl]);
 			}
-			free_register(rr); node->int_val = rl;
+			free_register(rr);
+			node->int_val = rl;
 		}
 		else {
 			// FIXED SSE2 FLOATING-POINT PIPELINE

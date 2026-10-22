@@ -145,6 +145,13 @@ int test_struct(int bonus) {
 	return final_score;
 }
 
+int complex_math_test() {
+	int result;
+	// Requires more than 3 simultaneous active evaluation states:
+	result = 1 + 2 + 3 + 4 + 5 + 6;
+	return result;
+}
+
 int main()
 {
 	int result;
@@ -213,6 +220,10 @@ int main()
 	int threshold;
 	threshold = macro_test();
 	printf("macro test is: %d\n", threshold);
+
+	int complex_math_test_result;
+	complex_math_test_result = complex_math_test();
+	printf("complex math test result is: %d\n", complex_math_test_result);
 
 	return 0;
 }
