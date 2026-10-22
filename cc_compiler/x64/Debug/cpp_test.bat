@@ -1,0 +1,1 @@
+cc_compiler test_main.c output.asm
