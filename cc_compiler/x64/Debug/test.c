@@ -1,6 +1,23 @@
 #define INITIAL_VALUE 42
 #define STEP_INCREMENT 5
 
+#define MULTIPLY(x, y) ((x) * (y))
+#define THRESHOLD 100
+
+#define MULTIPLY(x, y) ((x) * (y))
+#define THRESHOLD 100
+
+int macro_test() {
+	int calculation;
+	calculation = MULTIPLY(5, 10 + 2); // Expands to: ((5) * (10 + 2))
+
+#undef THRESHOLD
+	int THRESHOLD; // Legal C89 now, because THRESHOLD is no longer a macro!
+	THRESHOLD = calculation;
+
+	return THRESHOLD;
+}
+
 int define_test() {
 	int total_score;
 	int index_counter;
@@ -192,6 +209,10 @@ int main()
 	int total_score;
 	total_score = define_test();
 	printf("sum of defined is: %d\n", total_score);
+
+	int threshold;
+	threshold = macro_test();
+	printf("macro test is: %d\n", threshold);
 
 	return 0;
 }
