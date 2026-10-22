@@ -263,7 +263,6 @@ ASTNode* parse_expr(void) {
 }
 
 ASTNode* parse_struct_or_union_declaration(int is_union) {
-	// Match either struct or union keyword based on the flag passed
 	if (is_union) {
 		match(TOKEN_UNION);
 	}
@@ -277,37 +276,55 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 	match(TOKEN_LBRACE);
 
 	StructEnv* env = (StructEnv*)calloc(1, sizeof(StructEnv));
+	if (!env) {
+		fprintf(stderr, "Fatal Error: Out of memory during struct environment allocation.\n");
+		exit(1);
+	}
 	strcpy(env->name, name);
 	Member** mem_tail = &(env->members);
 
 	int total_size = 0;
 	int current_offset = 0;
 
+	// FIXED LOOP PIPELINE
 	while (cur_tok.type != TOKEN_RBRACE && cur_tok.type != TOKEN_EOF) {
 		DataType m_type;
 		memset(&m_type, 0, sizeof(m_type));
 
+		// 1. Check field type lexeme without consuming it prematurely
 		m_type.kind = (strcmp(cur_tok.lexeme, "float") == 0) ? TYPE_FLOAT : TYPE_INT;
+
+		// 2. Consume the type keyword identifier token ("int" or "float") safely
 		match(TOKEN_IDENT);
 
+		// 3. Extract the member name identifier string (e.g., "id", "age")
 		char m_name[64];
 		strcpy(m_name, cur_tok.lexeme);
+
+		// 4. Consume the member name identifier token 
 		match(TOKEN_IDENT);
+
+		// 5. Consume the terminating semicolon syntax marker
 		match(TOKEN_SEMI);
 
+		// Allocate and populate member attributes
 		Member* m = (Member*)calloc(1, sizeof(Member));
+		if (!m) {
+			fprintf(stderr, "Fatal Error: Out of memory during member allocation.\n");
+			exit(1);
+		}
 		strcpy(m->name, m_name);
 		m->type = m_type;
 
 		if (is_union) {
-			// Union members all start at offset 0
+			// Union members share stack alignment offset 0
 			m->offset = 0;
 			if (4 > total_size) {
-				total_size = 4; // Track maximum member size (assuming 4 bytes for primitives)
+				total_size = 4; // Track widest element primitive bounds size
 			}
 		}
 		else {
-			// Struct members accumulate offsets sequentially
+			// Struct members increment sequential byte layouts linearly
 			m->offset = current_offset;
 			current_offset += 4;
 			total_size = current_offset;
@@ -322,7 +339,6 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 	env->next = struct_table;
 	struct_table = env;
 
-	// Return the correct AST node flavor type
 	ASTNode* n = create_node(is_union ? AST_UNION_DECL : AST_STRUCT_DECL);
 	strcpy(n->name, name);
 	return n;
