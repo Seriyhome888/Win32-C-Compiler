@@ -188,6 +188,12 @@ int switch_test(int val) {
 	return out;
 }
 
+int negative_test() {
+	int negative_val;
+	negative_val = -15; 
+	return negative_val;
+}
+
 int main()
 {
 	int result;
@@ -270,6 +276,9 @@ int main()
 	printf("switch test result for 2 is: %d\n", switch_test(2));
 	printf("switch test result for 12 is: %d\n", switch_test(12));
 	printf("switch test result for 74 is: %d\n", switch_test(74));
+	printf("switch test result for negative_test() is: %d\n", switch_test(negative_test()));
+
+	printf("negative numbers opertaion result is: %d\n", 45 - 60);
 
 	return 0;
 }

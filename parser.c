@@ -162,12 +162,13 @@ ASTNode* parse_postfix(void) {
 }
 
 ASTNode* parse_unary(void) {
-	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR) {
+	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_MINUS) {
 		ASTNode* n = create_node(AST_UNOP);
 		n->op = cur_tok.type;
 		TokenType current_op = cur_tok.type;
 		match(cur_tok.type);
 
+		// Recursively parse the rest of the expression
 		n->left = parse_unary();
 
 		if (current_op == TOKEN_AMP) {
@@ -179,9 +180,12 @@ ASTNode* parse_unary(void) {
 				n->type = *(n->left->type.base_type);
 			}
 			else {
-				// Default fallback base promotion for standard primitive registers
 				n->type.kind = TYPE_INT;
 			}
+		}
+		else if (current_op == TOKEN_MINUS) {
+			// Propagate the child node's type context (int or float) to the negation node
+			n->type = n->left->type;
 		}
 		return n;
 	}

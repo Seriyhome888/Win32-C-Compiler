@@ -724,6 +724,24 @@ void emit_code(ASTNode* node) {
 			}
 		}
 
+		else if (node->op == TOKEN_MINUS) {
+			if (node->type.kind == TYPE_FLOAT) {
+				// For floating points, we XOR the register with itself or load a sign bit mask,
+				// or cleanly use a helper variable to switch the float's sign bits.
+				int lbl = gen_label();
+				printf("    .data\nneg_mask_%d REAL4 -1.0\n    .code\n", lbl);
+				printf("    cvtsi2ss xmm1, dword ptr [neg_mask_%d]\n", lbl);
+				printf("    movd xmm0, %s\n", reg_names[rl]);
+				printf("    mulss xmm0, xmm1\n");
+				printf("    movd %s, xmm0\n", reg_names[rl]);
+			}
+			else {
+				// Standard integer negation: flips the sign bits using native x86 hardware pipeline
+				printf("    neg %s\n", reg_names[rl]);
+			}
+			node->int_val = rl; // The result remains in the same register
+		}
+
 		break;
 	}
 
