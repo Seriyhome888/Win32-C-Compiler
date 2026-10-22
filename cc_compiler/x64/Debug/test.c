@@ -164,6 +164,12 @@ int char_test() {
 	return result;
 }
 
+void string_pointer_test() {
+	char* message;
+	message = "Hello World\n";
+	printf(message);
+}
+
 int main()
 {
 	int result;
@@ -240,6 +246,8 @@ int main()
 	int char_test_result;
 	char_test_result = char_test();
 	printf("char test result is: %d\n", char_test_result);
+
+	string_pointer_test();
 
 	return 0;
 }

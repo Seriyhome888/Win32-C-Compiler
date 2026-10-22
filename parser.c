@@ -381,6 +381,7 @@ ASTNode* parse_stmt(void) {
 			match(TOKEN_STAR);
 			// Wrap current type into a pointer base layer
 			DataType* base = (DataType*)calloc(1, sizeof(DataType));
+			if (!base) { printf("Fatal Error: Out of memory.\n"); exit(1); }
 			*base = vt;
 
 			memset(&vt, 0, sizeof(vt));

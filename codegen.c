@@ -345,7 +345,15 @@ void emit_code(ASTNode* node) {
 				exit(1);
 			}
 
-			if (sym->type.kind == TYPE_CHAR) {
+			if (sym->type.kind == TYPE_POINTER) {
+				if (sym->offset < 0) {
+					printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
+				}
+				else {
+					printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
+				}
+			}
+			else if (sym->type.kind == TYPE_CHAR) {
 				// Use 8-bit sub-register array to write exactly 1 byte down to stack memory!
 				if (sym->offset < 0) {
 					printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, reg_names_8[rv]);
