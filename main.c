@@ -14,58 +14,54 @@ extern Token cur_tok;
 void optimize_and_emit(FILE* out_file, const char* raw_line);
 void flush_peephole(FILE* out_file);
 
-// Declare the preprocessor entry method from preprocessor.c
+// Declare the external entry point from your cohesive preprocessor.c utility
 extern int run_preprocessor(const char* input_filename, const char* output_filename);
 
 int main(int argc, char* argv[]) {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	// 1. Update the Usage manual to accept an output destination file path
+	// 1. Validate incoming operational parameters
 	if (argc < 2) {
 		fprintf(stderr, "Usage: cc_compiler <source_file.c> [output_file.asm]\n");
 		return 1;
 	}
 
-	// --- STEP 1: RUN THE STANDALONE PREPROCESSOR ---
+	// --- PHASE 1: STANDALONE COHESIVE MACRO PREPROCESSOR PASS ---
 	const char* staging_file = "cc_preprocessed_source.i";
+
+	// Execute preprocessor pass to resolve macros, conditional stacks, and header include tracks
 	if (!run_preprocessor(argv[1], staging_file)) {
 		fprintf(stderr, "Fatal Error: Macro preprocessing phase failed.\n");
 		return 1;
 	}
 
-	// --- STEP 2: FEED THE PREPROCESSED STREAM INTO THE COMPILER ---
+	// Open the freshly generated preprocessed token stream file for core compilation
 	FILE* f = fopen(staging_file, "r");
 	if (!f) {
-		fprintf(stderr, "Error: Could not open preprocessed staging stream.\n");
+		fprintf(stderr, "Error: Could not open preprocessed staging source stream.\n");
 		return 1;
 	}
 
-	/*
-	FILE* f = fopen(argv[1], "r");
-	if (!f) {
-		fprintf(stderr, "Error: Could not open source file %s\n", argv[1]);
-		return 1;
-	}
-	*/
-
-	// Determine where the final optimized code goes (defaults to console screen)
+	// Determine where the final optimized assembly output goes (defaults to the console)
 	FILE* final_output = stdout;
 	if (argc >= 3) {
 		final_output = fopen(argv[2], "w");
 		if (!final_output) {
-			fprintf(stderr, "Error: Could not create output file %s\n", argv[2]);
+			fprintf(stderr, "Error: Could not create output assembly file %s\n", argv[2]);
 			fclose(f);
+			remove(staging_file);
 			return 1;
 		}
 	}
 
-	// 2. Clone standard out handles and redirect to intermediate temp file
+	// 2. Clone standard out handles and redirect output to intermediate temp file
 	int orig_stdout_fd = _dup(_fileno(stdout));
 
 	if (freopen("cc_compiler_temp.asm", "w+", stdout) == NULL) {
 		fprintf(stderr, "Compiler internal file streaming failure.\n");
 		fclose(f);
+		remove(staging_file);
 		if (final_output != stdout) fclose(final_output);
 		return 1;
 	}
@@ -77,6 +73,8 @@ int main(int argc, char* argv[]) {
 
 	is_codegen_phase = 0;
 
+	// --- PHASE 2: CORE LEXICAL AND PARSING COMPILER PIPELINE ---
+	// Feed the preprocessed file handle 'f' directly into the lexer!
 	init_lexer(f);
 	cur_tok = next_token();
 
@@ -93,19 +91,23 @@ int main(int argc, char* argv[]) {
 		clear_local_symbols();
 	}
 
-	// --- Existing Function Token Code Parsing Pipeline Above ---
 	printf("end\n");
 	fflush(stdout);
 
+	// Restore original stdout stream targets back from file redirection modes
 	_dup2(orig_stdout_fd, _fileno(stdout));
 	_close(orig_stdout_fd);
 	freopen("CONOUT$", "w", stdout);
 
-	// PEEPHOLE PROCESSING ENGINE
+	// Close the preprocessed input stream handle now that parsing is complete
+	fclose(f);
+	// Clean up the temporary preprocessed file right away
+	remove(staging_file);
+
+	// --- PHASE 3: TWO-PASS PEEPHOLE OPTIMIZATION ENGINE ---
 	FILE* raw_asm = fopen("cc_compiler_temp.asm", "r");
 	if (!raw_asm) {
 		fprintf(stderr, "Error: Could not open unoptimized assembly stream file.\n");
-		fclose(f);
 		if (final_output != stdout) fclose(final_output);
 		return 1;
 	}
@@ -125,9 +127,8 @@ int main(int argc, char* argv[]) {
 	}
 	flush_peephole(final_output);
 
+	// Final close out operations
 	fclose(raw_asm);
-	fclose(f);
-	remove(staging_file);
 	if (final_output != stdout) fclose(final_output);
 	remove("cc_compiler_temp.asm");
 
