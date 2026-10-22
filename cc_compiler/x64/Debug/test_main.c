@@ -16,3 +16,8 @@ int test_pipeline() {
 
     return local_buffer;
 }
+
+int main()
+{
+    return test_pipeline();
+}
