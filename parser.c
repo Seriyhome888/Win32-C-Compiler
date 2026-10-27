@@ -251,8 +251,36 @@ ASTNode* parse_relational(void) {
 	return n;
 }
 
-ASTNode* parse_expr(void) {
+ASTNode* parse_log_and(void) {
 	ASTNode* n = parse_relational();
+	while (cur_tok.type == TOKEN_LOGAND) {
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = cur_tok.type;
+		parent->left = n;
+		match(TOKEN_LOGAND);
+		parent->right = parse_relational();
+		parent->type.kind = TYPE_INT; // Boolean evaluation result is an int
+		n = parent;
+	}
+	return n;
+}
+
+ASTNode* parse_log_or(void) {
+	ASTNode* n = parse_log_and();
+	while (cur_tok.type == TOKEN_LOGOR) {
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = cur_tok.type;
+		parent->left = n;
+		match(TOKEN_LOGOR);
+		parent->right = parse_log_and();
+		parent->type.kind = TYPE_INT; // Boolean evaluation result is an int
+		n = parent;
+	}
+	return n;
+}
+
+ASTNode* parse_expr(void) {
+	ASTNode* n = parse_log_or();
 	if (cur_tok.type == TOKEN_ASSIGN) {
 		ASTNode* parent = create_node(AST_ASSIGN);
 		parent->left = n;

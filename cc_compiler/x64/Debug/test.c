@@ -244,6 +244,40 @@ int test_float_div() {
 	return 0;
 }
 
+int test_logic() {
+	int a;
+	int b;
+	a = 1;
+	b = 0;
+
+	if (a && b) {
+		printf("AND check failed!\n");
+	}
+	else {
+		printf("AND check passed!\n"); // Expected
+	}
+
+	if (a || b) {
+		printf("OR check passed!\n");  // Expected
+	}
+	else {
+		printf("OR check failed!\n");
+	}
+
+	// Short-circuit confirmation: if left side is 0, execution stops 
+	// without triggering division-by-zero crashes
+	int zero;
+	zero = 0;
+	if (zero && (10 / zero == 2)) {
+		printf("Short circuit broken!\n");
+	}
+	else {
+		printf("Short circuit validation verified safely!\n");
+	}
+
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -332,6 +366,8 @@ int main()
 
 	test_div_mod();
 	test_float_div();
+
+	test_logic();
 
 	return 0;
 }

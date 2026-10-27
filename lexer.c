@@ -129,7 +129,16 @@ Token next_token(void) {
 	case '+': tok.type = TOKEN_PLUS; ch = fgetc(src_file); break;
 	case '*': tok.type = TOKEN_STAR; ch = fgetc(src_file); break;
 	case '%': tok.type = TOKEN_PERCENT; ch = fgetc(src_file); break;
-	case '&': tok.type = TOKEN_AMP; ch = fgetc(src_file); break;
+	case '&':
+		ch = fgetc(src_file);
+		if (ch == '&') { tok.type = TOKEN_LOGAND; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_AMP; } // Retains unary address-of / bitwise AND
+		break;
+	case '|':
+		ch = fgetc(src_file);
+		if (ch == '|') { tok.type = TOKEN_LOGOR; ch = fgetc(src_file); }
+		else { printf("Lexical Error: Raw bitwise '|' unsupported.\n"); exit(1); }
+	break;
 	case ':': tok.type = TOKEN_COLON; ch = fgetc(src_file); break;
 	case ';': tok.type = TOKEN_SEMI; ch = fgetc(src_file); break;
 	case ',': tok.type = TOKEN_COMMA; ch = fgetc(src_file); break;

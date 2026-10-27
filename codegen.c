@@ -194,6 +194,61 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_BINOP: {
+		// --- NEW: SHORT-CIRCUIT BOOLEAN EVALUATIONS ---
+		if (node->op == TOKEN_LOGAND || node->op == TOKEN_LOGOR) {
+			int shortcut_label = gen_label();
+			int end_label = gen_label();
+
+			// 1. Evaluate the left side completely
+			emit_code(node->left);
+			int rl = node->left->int_val;
+
+			printf("    cmp %s, 0\n", reg_names[rl]);
+			if (node->op == TOKEN_LOGAND) {
+				// For AND: if left side is 0 (false), skip right side, jump to shortcut (result = 0)
+				printf("    je L%d\n", shortcut_label);
+			}
+			else {
+				// For OR: if left side is NOT 0 (true), skip right side, jump to shortcut (result = 1)
+				printf("    jne L%d\n", shortcut_label);
+			}
+
+			// If we didn't jump, the register 'rl' can be reused or freed for the right side
+			free_register(rl);
+
+			// 2. Evaluate the right side completely
+			emit_code(node->right);
+			int rr = node->right->int_val;
+
+			// Normalize right side result into 0 or 1
+			printf("    cmp %s, 0\n", reg_names[rr]);
+			int target_reg = allocate_register();
+			printf("    setne %s\n", (target_reg == 0) ? "al" : (target_reg == 1) ? "cl" : "dl");
+			printf("    movzx %s, %s\n", reg_names[target_reg], (target_reg == 0) ? "al" : (target_reg == 1) ? "cl" : "dl");
+			free_register(rr);
+
+			printf("    jmp L%d\n", end_label);
+
+			// 3. The shortcut point
+			printf("L%d:\n", shortcut_label);
+			// Re-allocate target_reg if it was cleared out
+			int final_reg = allocate_register();
+			if (node->op == TOKEN_LOGAND) {
+				printf("    mov %s, 0\n", reg_names[final_reg]); // False fallback
+			}
+			else {
+				printf("    mov %s, 1\n", reg_names[final_reg]); // True fallback
+			}
+
+			printf("L%d:\n", end_label);
+
+			// Combine internal registers safely
+			node->int_val = final_reg;
+			node->type.kind = TYPE_INT;
+			break;
+		}
+		// --- END OF BOOLEAN ENGINE ---
+
 		int is_float = (node->left->type.kind == TYPE_FLOAT || node->right->type.kind == TYPE_FLOAT || node->type.kind == TYPE_FLOAT);
 
 		// 1. Evaluate left child node tree
