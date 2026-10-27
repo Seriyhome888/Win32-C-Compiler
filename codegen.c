@@ -849,6 +849,21 @@ void emit_code(ASTNode* node) {
 			}
 			node->int_val = rl; // The result remains in the same register
 		}
+		else if (node->op == TOKEN_NOT) {
+			// Compare value inside the register against zero
+			printf("    cmp %s, 0\n", reg_names[rl]);
+
+			// Dynamically find matching 8-bit byte layout name sub-register ('al', 'cl', or 'dl')
+			const char* target_byte = (rl == 0) ? "al" : (rl == 1) ? "cl" : "dl";
+
+			// sete loads a 1 into the byte register if the comparison was equal to 0, otherwise 0
+			printf("    sete %s\n", target_byte);
+
+			// Clear top 24 bits of our 32-bit register cleanly via zero extension
+			printf("    movzx %s, %s\n", reg_names[rl], target_byte);
+
+			node->int_val = rl; // The inverted result stays right inside register 'rl'
+		}
 
 		break;
 	}

@@ -278,6 +278,42 @@ int test_logic() {
 	return 0;
 }
 
+int test_not() {
+	int active;
+	int disabled;
+
+	active = 1;
+	disabled = 0;
+
+	// Test inverting true (!1 -> 0)
+	if (!active) {
+		printf("Test 1 Failed: !1 evaluated as true.\n");
+	}
+	else {
+		printf("Test 1 Passed: !1 evaluated correctly as false.\n");
+	}
+
+	// Test inverting false (!0 -> 1)
+	if (!disabled) {
+		printf("Test 2 Passed: !0 evaluated correctly as true.\n");
+	}
+	else {
+		printf("Test 2 Failed: !0 evaluated as false.\n");
+	}
+
+	// Test nested inline algebraic usage
+	int value;
+	value = 0;
+	if (!(!value)) {
+		printf("Test 3 Failed: Double negation failed.\n");
+	}
+	else {
+		printf("Test 3 Passed: Double negation worked cleanly.\n");
+	}
+
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -368,6 +404,7 @@ int main()
 	test_float_div();
 
 	test_logic();
+	test_not();
 
 	return 0;
 }

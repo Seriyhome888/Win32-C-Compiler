@@ -129,6 +129,7 @@ Token next_token(void) {
 	case '+': tok.type = TOKEN_PLUS; ch = fgetc(src_file); break;
 	case '*': tok.type = TOKEN_STAR; ch = fgetc(src_file); break;
 	case '%': tok.type = TOKEN_PERCENT; ch = fgetc(src_file); break;
+	case '!': tok.type = TOKEN_NOT; ch = fgetc(src_file); break;
 	case '&':
 		ch = fgetc(src_file);
 		if (ch == '&') { tok.type = TOKEN_LOGAND; ch = fgetc(src_file); }

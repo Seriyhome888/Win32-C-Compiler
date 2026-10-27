@@ -162,7 +162,7 @@ ASTNode* parse_postfix(void) {
 }
 
 ASTNode* parse_unary(void) {
-	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_MINUS) {
+	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_MINUS || cur_tok.type == TOKEN_NOT) {
 		ASTNode* n = create_node(AST_UNOP);
 		n->op = cur_tok.type;
 		TokenType current_op = cur_tok.type;
@@ -187,6 +187,10 @@ ASTNode* parse_unary(void) {
 			// Propagate the child node's type context (int or float) to the negation node
 			n->type = n->left->type;
 		}
+		else if (current_op == TOKEN_NOT) {
+			n->type.kind = TYPE_INT; // Results of logical evaluations are always integer booleans
+		}
+		
 		return n;
 	}
 	return parse_postfix();
