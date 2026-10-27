@@ -194,6 +194,56 @@ int negative_test() {
 	return negative_val;
 }
 
+int test_div_mod() {
+	int a;
+	int b;
+	int div_result;
+	int mod_result;
+
+	a = 47;
+	b = 5;
+
+	// Test Division: 47 / 5 should equal 9
+	div_result = a / b;
+	printf("Division Test (47 / 5): %d\n", div_result);
+
+	// Test Modulo: 47 % 5 should equal 2
+	mod_result = a % b;
+	printf("Modulo Test (47 %% 5): %d\n", mod_result);
+
+	// Test with a negative dividend: -23 / 4 should equal -5, -23 % 4 should equal -3
+	a = -23;
+	b = 4;
+	div_result = a / b;
+	mod_result = a % b;
+
+	printf("Negative Div Test (-23 / 4): %d\n", div_result);
+	printf("Negative Mod Test (-23 %% 4): %d\n", mod_result);
+
+	return 0;
+}
+
+int test_float_div() {
+	float x;
+	float y;
+	float result;
+
+	x = 10.5;
+	y = 2.0;
+
+	// Test true float / float division (10.5 / 2.0 = 5.25)
+	result = x / y;
+	printf("Float Division Test (10.5 / 2.0): %f\n", result);
+
+	// Test promotion float / int division (10.5 / 4 = 2.625)
+	int divisor;
+	divisor = 4;
+	result = x / divisor;
+	printf("Mixed Promotion Division Test (10.5 / 4): %f\n", result);
+
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -279,6 +329,9 @@ int main()
 	printf("switch test result for negative_test() is: %d\n", switch_test(negative_test()));
 
 	printf("negative numbers opertaion result is: %d\n", 45 - 60);
+
+	test_div_mod();
+	test_float_div();
 
 	return 0;
 }

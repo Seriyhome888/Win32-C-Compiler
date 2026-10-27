@@ -128,6 +128,7 @@ Token next_token(void) {
 	switch (ch) {
 	case '+': tok.type = TOKEN_PLUS; ch = fgetc(src_file); break;
 	case '*': tok.type = TOKEN_STAR; ch = fgetc(src_file); break;
+	case '%': tok.type = TOKEN_PERCENT; ch = fgetc(src_file); break;
 	case '&': tok.type = TOKEN_AMP; ch = fgetc(src_file); break;
 	case ':': tok.type = TOKEN_COLON; ch = fgetc(src_file); break;
 	case ';': tok.type = TOKEN_SEMI; ch = fgetc(src_file); break;

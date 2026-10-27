@@ -194,7 +194,7 @@ ASTNode* parse_unary(void) {
 
 ASTNode* parse_mul(void) {
 	ASTNode* n = parse_unary();
-	while (cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_SLASH) {
+	while (cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_SLASH || cur_tok.type == TOKEN_PERCENT) {
 		ASTNode* parent = create_node(AST_BINOP); parent->op = cur_tok.type;
 		parent->left = n; match(cur_tok.type); parent->right = parse_unary();
 

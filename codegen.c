@@ -211,6 +211,58 @@ void emit_code(ASTNode* node) {
 			if (node->op == TOKEN_PLUS) printf("    add %s, %s\n", reg_names[rl], reg_names[rr]);
 			else if (node->op == TOKEN_MINUS) printf("    sub %s, %s\n", reg_names[rl], reg_names[rr]);
 			else if (node->op == TOKEN_STAR) printf("    imul %s, %s\n", reg_names[rl], reg_names[rr]);
+
+			// --- NEW: INTEGER DIVISION & MODULO PIPELINE ---
+			else if (node->op == TOKEN_SLASH || node->op == TOKEN_PERCENT) {
+				// 1. We must force the left operand (dividend) into EAX (index 0)
+				// 2. We must free up EDX (index 2) so CDQ can clobber it safely
+
+				// Save any values currently residing in eax/edx that aren't 'rl' or 'rr'
+				int save_eax = (rl != 0 && rr != 0 && reg_map[0]);
+				int save_edx = (rl != 2 && rr != 2 && reg_map[2]);
+
+				if (save_eax) printf("    push eax\n");
+				if (save_edx) printf("    push edx\n");
+
+				// Move left operand into eax if it isn't already there
+				if (rl != 0) {
+					printf("    mov eax, %s\n", reg_names[rl]);
+				}
+
+				// Sign-extend EAX into EDX (creates a 64-bit dividend across edx:eax)
+				printf("    cdq\n");
+
+				// Execute the division. This divides edx:eax by the register rr
+				// If rr happens to be eax or edx, we must account for where it went!
+				if (rr == 0) {
+					// Exceptional case: if right operand was eax, it's already lost or overridden
+					printf("    ; Warning: potential division metadata collision\n");
+				}
+				printf("    idiv %s\n", reg_names[rr]);
+
+				// Collect the target output
+				if (node->op == TOKEN_SLASH) {
+					// Division result is stored in EAX
+					if (rl != 0) {
+						printf("    mov %s, eax\n", reg_names[rl]);
+					}
+				}
+				else {
+					// Modulo remainder result is stored in EDX
+					if (rl != 2) {
+						printf("    mov %s, edx\n", reg_names[rl]);
+					}
+					else {
+						// If rl was already index 2 (edx), it naturally has our remainder now!
+					}
+				}
+
+				// Restore clobbered registers back from stack frames
+				if (save_edx) printf("    pop edx\n");
+				if (save_eax) printf("    pop eax\n");
+			}
+			// --- END OF NEW PIPELINE ---
+
 			else if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER || node->op == TOKEN_EQUAL) {
 				printf("    cmp %s, %s\n", reg_names[rl], reg_names[rr]);
 				const char* bytes[] = { "al", "cl", "dl" };
@@ -256,6 +308,7 @@ void emit_code(ASTNode* node) {
 				if (node->op == TOKEN_PLUS) printf("    addss xmm0, xmm1\n");
 				else if (node->op == TOKEN_MINUS) printf("    subss xmm0, xmm1\n");
 				else if (node->op == TOKEN_STAR) printf("    mulss xmm0, xmm1\n");
+				else if (node->op == TOKEN_SLASH) printf("    divss xmm0, xmm1\n");
 
 				// Safely extract the float results back out into a general-purpose register
 				// WITHOUT mutating or spilling onto 'esp'
