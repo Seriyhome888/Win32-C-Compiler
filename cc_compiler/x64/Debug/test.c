@@ -47,11 +47,17 @@ void pointer_dereference()
 	target_var = 15;
 	ptr_addr = &target_var;      // Test Address-of instruction logic (&)
 	retrieved_val = *ptr_addr;   // Test Pointer Dereference register load (*)
-	printf("Pointer Value Verification 1: %d\n", retrieved_val);
+	if (retrieved_val == 15)
+		printf("Pointer Value Verification 1 PASSED with value: %d\n", retrieved_val);
+	else
+		printf("Pointer Value Verification 1 FAILED \n");
 
 	*ptr_addr = 99;              // Test assignment through indirect reference pointer
 	retrieved_val = target_var;  // Read directly from target_var to see if it mutated
-	printf("Pointer Value Verification 2 (Mutated): %d\n", retrieved_val);
+	if (retrieved_val == 99)
+		printf("Pointer Value Verification 2 (Mutated) PASSED with value: %d\n", retrieved_val);
+	else
+		printf("Pointer Value Verification 2 (Mutated) FAILED\n");
 }
 
 int while_sum_test()
@@ -66,6 +72,11 @@ int while_sum_test()
 		j = j + 1;
 	}
 
+	if (while_sum == 10)
+		printf("The loop sum total test PASSED with value: %d\n", while_sum);
+	else
+		printf("The loop sum total test FAILED\n");
+
 	return while_sum;
 }
 
@@ -78,6 +89,11 @@ int for_sum_test()
 	for (k = 0; k < 5; k = k + 1) {
 		for_sum = for_sum + k;
 	}
+
+	if (for_sum == 10)
+		printf("The transformed for loop test PASSED with value: %d\n", for_sum);
+	else
+		printf("The transformed for loop test FAILED \n");
 
 	return for_sum;
 }
@@ -99,6 +115,11 @@ int break_continue_test()
 		total = total + i;
 	}
 
+	if (total == 12)
+		printf("The total using break and continue test PASSED with value: %d\n", total);
+	else
+		printf("The total using break and continue test FAILED\n");
+
 	return total;
 }
 
@@ -112,6 +133,11 @@ float integer_to_float_promoting()
 	floating_val = 3.5;
 
 	float_int_sum = integer_val + floating_val;
+
+	if(float_int_sum == 8.5)
+		printf("Mixed mode validation test PASSED with value: %f\n", float_int_sum);
+	else
+		printf("Mixed mode validation test FAILED\n");
 
 	// MIXED MODE EXPRESSION: Implicitly promotes 'integer_val' to float before adding!
 	return float_int_sum;
@@ -205,11 +231,17 @@ int test_div_mod() {
 
 	// Test Division: 47 / 5 should equal 9
 	div_result = a / b;
-	printf("Division Test (47 / 5): %d\n", div_result);
+	if (div_result == 9)
+		printf("Division Test (47 / 5) PASSED with value: %d\n", div_result);
+	else
+		printf("Division Test (47 / 5) FAILED\n");
 
 	// Test Modulo: 47 % 5 should equal 2
 	mod_result = a % b;
-	printf("Modulo Test (47 %% 5): %d\n", mod_result);
+	if (mod_result == 2)
+		printf("Modulo Test (47 %% 5) PASSED with value: %d\n", mod_result);
+	else
+		printf("Modulo Test (47 %% 5) FAILED\n");
 
 	// Test with a negative dividend: -23 / 4 should equal -5, -23 % 4 should equal -3
 	a = -23;
@@ -217,8 +249,15 @@ int test_div_mod() {
 	div_result = a / b;
 	mod_result = a % b;
 
-	printf("Negative Div Test (-23 / 4): %d\n", div_result);
-	printf("Negative Mod Test (-23 %% 4): %d\n", mod_result);
+	if (div_result == -5)
+		printf("Negative Div Test (-23 / 4) PASSED with value: %d\n", div_result);
+	else
+		printf("Negative Div Test (-23 / 4) FAILED\n");
+
+	if (mod_result == -3)
+		printf("Negative Mod Test (-23 %% 4) PASSED with value: %d\n", mod_result);
+	else
+		printf("Negative Mod Test (-23 %% 4) FAILED\n");
 
 	return 0;
 }
@@ -233,13 +272,19 @@ int test_float_div() {
 
 	// Test true float / float division (10.5 / 2.0 = 5.25)
 	result = x / y;
-	printf("Float Division Test (10.5 / 2.0): %f\n", result);
+	if (result == 5.25)
+		printf("Float Division Test (10.5 / 2.0) PASSED with value: %f\n", result);
+	else
+		printf("Float Division Test (10.5 / 2.0) FAILED\n");
 
 	// Test promotion float / int division (10.5 / 4 = 2.625)
 	int divisor;
 	divisor = 4;
 	result = x / divisor;
-	printf("Mixed Promotion Division Test (10.5 / 4): %f\n", result);
+	if (result == 2.625)
+		printf("Mixed Promotion Division Test (10.5 / 4) PASSED with value: %f\n", result);
+	else
+		printf("Mixed Promotion Division Test (10.5 / 4) FAILED\n");
 
 	return 0;
 }
@@ -314,53 +359,67 @@ int test_not() {
 	return 0;
 }
 
-int main()
+void exchange_test()
 {
-	int result;
-	result = calc(2, 3);
-	printf("The final compiled result is: %d\n", result);
-
-	if (result < 6) {
-		printf("Condition True: X is less than Y\n");
-	}
-	else {
-		printf("Condition False: X is greater or equal\n");
-	}
-
 	int arr;
 	int res;
 	arr = 42;
 	res = arr;
-	printf("The extracted contiguous array element value is: %d\n", res);
+	if (res == 42)
+		printf("The exchange test PASSED with value: %d\n", res);
+	else
+		printf("The exchange test FAILED \n");
+}
 
-	pointer_dereference();
-
-	int while_sum;
-	while_sum = while_sum_test();
-	printf("The loop sum total is: %d\n", while_sum);
-
-	int for_sum;
-	for_sum = for_sum_test();
-	printf("The transformed for loop sum total is: %d\n", for_sum);
-
-	int total;
-	total = break_continue_test();
-	printf("The final total using break and continue is: %d\n", total);
-
+void two_dimensional_matrix_test()
+{
 	int matrix[3][5];
 	int val;
 	// Target a nested cell coordinate index location
 	matrix[1][2] = 88;
 	val = matrix[1][2];
-	printf("The structural 2D matrix dynamic value is: %d\n", val);
+	if (val == 88)
+		printf("The 2D matrix dynamic value test PASSED with value: %d\n", val);
+	else
+		printf("The 2D matrix dynamic value test FAILED\n");
+}
 
-	float float_int_sum;
-	float_int_sum = integer_to_float_promoting();
-	printf("Mixed mode validation pipeline complete.%f\n", float_int_sum);
+int main()
+{
+	int result;
+	result = calc(2, 3);
+	if (result == 5)
+		printf("Test calc() PASSED with the result: %d\n", result);
+	else
+		printf("Test calc() FAILED \n");
+
+	if (result < 6) {
+		printf("Condition True: X (%d) is less than Y (%d)\n", result, 6);
+	}
+	else {
+		printf("Condition False: X (%d) is greater or equal\n", result);
+	}
+
+	exchange_test();
+
+	pointer_dereference();
+	
+	while_sum_test();	
+	
+	for_sum_test();	
+	
+	break_continue_test();	
+
+	two_dimensional_matrix_test();
+	
+	integer_to_float_promoting();	
 
 	int final_score;
 	final_score = test_struct(10);
-	printf("Final score is: %d\n", final_score);
+	if (final_score == 5041)
+		printf("Test structs PASSED with value: %d\n", final_score);
+	else
+		printf("Test structs FAILED\n");
 
 	float a;
 	float b;
@@ -369,36 +428,48 @@ int main()
 
 	// Triggers SSE2 comiss jump pipeline evaluation!
 	if (a > b) {
-		printf("Float Verification Complete: 4.5 is greater than 2.1 via SSE2!\n");
+		printf("Float Verification PASSED: 4.5 is greater than 2.1 via SSE2!\n");
 	}
 	else {
-		printf("Float Verification Failed!\n");
+		printf("Float Verification FAILED\n");
 	}
 
 	int total_score;
 	total_score = define_test();
-	printf("sum of defined is: %d\n", total_score);
+	if (total_score == 47)
+		printf("sum of defined test is PASSED with value: %d\n", total_score);
+	else
+		printf("sum of defined test is FAILED\n");
 
 	int threshold;
 	threshold = macro_test();
-	printf("macro test is: %d\n", threshold);
+	if (threshold == 60)
+		printf("macro test PASSED with value: %d\n", threshold);
+	else
+		printf("macro test FAILED\n");
 
 	int complex_math_test_result;
 	complex_math_test_result = complex_math_test();
-	printf("complex math test result is: %d\n", complex_math_test_result);
+	if (complex_math_test_result == 21)
+		printf("complex math test PASSED with value: %d\n", complex_math_test_result);
+	else
+		printf("complex math test FAILED\n");
 
 	int char_test_result;
 	char_test_result = char_test();
-	printf("char test result is: %d\n", char_test_result);
+	if (char_test_result == 70)
+		printf("char test PASSED with value: %d\n", char_test_result);
+	else
+		printf("char test FAILED\n");
 
 	string_pointer_test();
 
-	printf("switch test result for 2 is: %d\n", switch_test(2));
-	printf("switch test result for 12 is: %d\n", switch_test(12));
-	printf("switch test result for 74 is: %d\n", switch_test(74));
-	printf("switch test result for negative_test() is: %d\n", switch_test(negative_test()));
+	printf("switch test result for 2 (should be 20) is: %d\n", switch_test(2));
+	printf("switch test result for 12 (should be 99) is: %d\n", switch_test(12));
+	printf("switch test result for 74 (should be 47) is: %d\n", switch_test(74));
+	printf("switch test result for negative_test() (should be 99) is: %d\n", switch_test(negative_test()));
 
-	printf("negative numbers opertaion result is: %d\n", 45 - 60);
+	printf("negative numbers operation 45 - 60 = %d\n", 45 - 60);
 
 	test_div_mod();
 	test_float_div();
