@@ -1,6 +1,63 @@
 #include "cc.h"
 #include <stdarg.h>
 
+#define MAX_LITERAL_BUFFER 512
+typedef struct {
+	int id;
+	int is_float; // 1 = float, 0 = string
+	double float_val;
+	char str_val[128]; // <-- FIXED: Sized character array buffer bounds protection
+} LiteralEntry;
+
+static LiteralEntry literal_pool[MAX_LITERAL_BUFFER];
+static int literal_pool_count = 0;
+
+void add_buffered_float(int id, double val) {
+	if (literal_pool_count >= MAX_LITERAL_BUFFER) return;
+	literal_pool[literal_pool_count].id = id;
+	literal_pool[literal_pool_count].is_float = 1;
+	literal_pool[literal_pool_count].float_val = val;
+	literal_pool_count++;
+}
+
+void add_buffered_string(int id, const char* str) {
+	if (literal_pool_count >= MAX_LITERAL_BUFFER) return;
+	literal_pool[literal_pool_count].id = id;
+	literal_pool[literal_pool_count].is_float = 0;
+	strncpy(literal_pool[literal_pool_count].str_val, str, 127);
+	literal_pool_count++;
+}
+
+// Global invocation pipeline to flush out data cleanly at program teardown
+void flush_global_data_segment(void) {
+	if (literal_pool_count == 0) return;
+	printf("\n.data\n");
+	for (int i = 0; i < literal_pool_count; i++) {
+		if (literal_pool[i].is_float) {
+			printf("flt_lbl_%d REAL4 %f\n", literal_pool[i].id, literal_pool[i].float_val);
+		}
+		else {
+			printf("str_lbl_%d DB ", literal_pool[i].id);
+			printf("\"");
+			for (int j = 0; literal_pool[i].str_val[j] != '\0'; j++) {
+				if (literal_pool[i].str_val[j] == '\n') {
+					if (literal_pool[i].str_val[j + 1] != '\0') printf("\", 10, \"");
+					else printf("\", 10");
+				}
+				else {
+					putchar(literal_pool[i].str_val[j]);
+				}
+			}
+			if (literal_pool[i].str_val[strlen(literal_pool[i].str_val) - 1] == '\n') {
+				printf(", 0\n");
+			}
+			else {
+				printf("\", 0\n");
+			}
+		}
+	}
+}
+
 static const char* reg_names_8[] = { "al", "cl", "dl" };
 
 // Track the current function's dynamic spilling offset allocation bounds
@@ -116,16 +173,16 @@ void emit_code(ASTNode* node) {
 
 	case AST_FUNC_DECL:
 		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
-		spill_stack_offset = 0; // Reset spill tracking allocator for the incoming function layout frame
+		spill_stack_offset = 0;
 
 		printf("PUBLIC %s\n", node->name);
 		printf("%s proc\n", node->name);
 		printf("    push ebp\n    mov ebp, esp\n");
-
-		// Dynamic allocation including the base calculated requirements
 		printf("    sub esp, %d\n", node->int_val);
 
 		emit_code(node->body);
+
+		// Catch-all safety boundary for functions lacking an explicit return statement
 		printf("    mov esp, ebp\n    pop ebp\n    ret\n%s endp\n\n", node->name);
 		break;
 
@@ -165,28 +222,12 @@ void emit_code(ASTNode* node) {
 		}
 		else if (node->type.kind == TYPE_FLOAT) {
 			int lbl = gen_label();
-			// Define the raw float value in the data section
-			printf("    .data\nflt_lbl_%d REAL4 %f\n    .code\n", lbl, node->float_val);
-
-			// FIXED: Load the actual value stored at the label, not the address pointer!
+			add_buffered_float(lbl, node->float_val);
 			printf("    mov %s, dword ptr [flt_lbl_%d]\n", reg_names[r], lbl);
 		}
 		else if (node->type.kind == TYPE_POINTER) {
 			int lbl = gen_label();
-			printf("    .data\nstr_lbl_%d DB ", lbl);
-			printf("\"");
-			for (int i = 0; node->name[i] != '\0'; i++) {
-				if (node->name[i] == '\n') {
-					if (node->name[i + 1] != '\0') printf("\", 10, \"");
-					else printf("\", 10");
-				}
-				else {
-					putchar(node->name[i]);
-				}
-			}
-			if (node->name[strlen(node->name) - 1] == '\n') printf(", 0\n    .code\n");
-			else printf("\", 0\n    .code\n");
-
+			add_buffered_string(lbl, node->name);
 			printf("    lea %s, str_lbl_%d\n", reg_names[r], lbl);
 		}
 		node->int_val = r;
@@ -206,11 +247,11 @@ void emit_code(ASTNode* node) {
 			printf("    cmp %s, 0\n", reg_names[rl]);
 			if (node->op == TOKEN_LOGAND) {
 				// For AND: if left side is 0 (false), skip right side, jump to shortcut (result = 0)
-				printf("    je L%d\n", shortcut_label);
+				printf("    je $$L%d\n", shortcut_label);
 			}
 			else {
 				// For OR: if left side is NOT 0 (true), skip right side, jump to shortcut (result = 1)
-				printf("    jne L%d\n", shortcut_label);
+				printf("    jne $$L%d\n", shortcut_label);
 			}
 
 			// If we didn't jump, the register 'rl' can be reused or freed for the right side
@@ -227,10 +268,10 @@ void emit_code(ASTNode* node) {
 			printf("    movzx %s, %s\n", reg_names[target_reg], (target_reg == 0) ? "al" : (target_reg == 1) ? "cl" : "dl");
 			free_register(rr);
 
-			printf("    jmp L%d\n", end_label);
+			printf("    jmp $$L%d\n", end_label);
 
 			// 3. The shortcut point
-			printf("L%d:\n", shortcut_label);
+			printf("$$L%d:\n", shortcut_label);
 			// Re-allocate target_reg if it was cleared out
 			int final_reg = allocate_register();
 			if (node->op == TOKEN_LOGAND) {
@@ -240,7 +281,7 @@ void emit_code(ASTNode* node) {
 				printf("    mov %s, 1\n", reg_names[final_reg]); // True fallback
 			}
 
-			printf("L%d:\n", end_label);
+			printf("$$L%d:\n", end_label);
 
 			// Combine internal registers safely
 			node->int_val = final_reg;
@@ -391,15 +432,18 @@ void emit_code(ASTNode* node) {
 
 		int r_ad = allocate_register();
 
-		// FIXED: Uniformly enforce correct MASM signage for reads
 		if (sym->offset < 0) {
+			// Stack arrays live below EBP: base address calculation
 			printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
+			// Subtract the positive index offset to go deeper into the stack allocation space
+			printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 		else {
+			// Global/argument pointers live above EBP: add the index offset
 			printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
+			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 
-		printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		printf("    mov %s, dword ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
 
 		free_register(r_off);
@@ -567,16 +611,17 @@ void emit_code(ASTNode* node) {
 
 			int dim = 0, r_off = -1;
 			compile_array_offset(node->left, &dim, sym, &r_off);
-			printf("    shl %s, 2\n", reg_names[r_off]); // Scale index coordinate displacement (4 bytes per item)
+			printf("    shl %s, 2\n", reg_names[r_off]);
 
 			int r_ad = allocate_register();
 			if (sym->offset < 0) {
 				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
+				printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]); // <-- FIXED SIGNAGE
 			}
 			else {
 				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
+				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 			}
-			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 
 			if (sym->type.kind == TYPE_FLOAT) {
 				if (node->right->type.kind == TYPE_INT) {
@@ -596,6 +641,11 @@ void emit_code(ASTNode* node) {
 			free_register(rv);
 		}
 
+		// Clean up node execution markers
+		if (node->right && node->right->int_val >= 0 && node->right->int_val < 3) {
+			free_register(node->right->int_val);
+			node->right->int_val = -1;
+		}
 		break;
 	}
 
@@ -604,7 +654,7 @@ void emit_code(ASTNode* node) {
 		emit_code(node->cond);
 
 		int r_cond = node->cond->int_val;
-		printf("    cmp %s, 0\n    je L%d\n", reg_names[r_cond], l_else);
+		printf("    cmp %s, 0\n    je $$L%d\n", reg_names[r_cond], l_else);
 		free_register(r_cond); // Cleanly free the condition register right away!
 
 		emit_code(node->body);
@@ -614,7 +664,7 @@ void emit_code(ASTNode* node) {
 			node->body->int_val = -1;
 		}
 
-		printf("    jmp L%d\nL%d:\n", l_end, l_else);
+		printf("    jmp $$L%d\n$$L%d:\n", l_end, l_else);
 		if (node->else_body) {
 			emit_code(node->else_body);
 			// Clear out any leaked registers remaining inside the else statement body block
@@ -623,7 +673,7 @@ void emit_code(ASTNode* node) {
 				node->else_body->int_val = -1;
 			}
 		}
-		printf("L%d:\n", l_end);
+		printf("$$L%d:\n", l_end);
 		break;
 	}
 
@@ -648,15 +698,15 @@ void emit_code(ASTNode* node) {
 	case AST_WHILE: {
 		int l_co = gen_label(), l_en = gen_label();
 		loop_stack[loop_stack_top++] = (LoopFrame){ l_co, l_en };
-		printf("L%d:\n", l_co);
+		printf("$$L%d:\n", l_co);
 
 		emit_code(node->cond);
 		int r_cond = node->cond->int_val; // Explicitly track the condition register
-		printf("    cmp %s, 0\n    je L%d\n", reg_names[r_cond], l_en);
+		printf("    cmp %s, 0\n    je $$L%d\n", reg_names[r_cond], l_en);
 		free_register(r_cond);            // Free right away before executing the loop body!
 
 		emit_code(node->body);
-		printf("    jmp L%d\nL%d:\n", l_co, l_en);
+		printf("    jmp $$L%d\n$$L%d:\n", l_co, l_en);
 		loop_stack_top--;
 		break;
 	}
@@ -667,46 +717,47 @@ void emit_code(ASTNode* node) {
 		if (node->left && node->left->int_val >= 0) free_register(node->left->int_val);
 
 		loop_stack[loop_stack_top++] = (LoopFrame){ l_st, l_en };
-		printf("L%d:\n", l_co);
+		printf("$$L%d:\n", l_co);
 
 		emit_code(node->cond);
 		int r_cond = node->cond->int_val; // Explicitly track the condition register
-		printf("    cmp %s, 0\n    je L%d\n", reg_names[r_cond], l_en);
+		printf("    cmp %s, 0\n    je $$L%d\n", reg_names[r_cond], l_en);
 		free_register(r_cond);            // Free right away before executing the loop body!
 
 		emit_code(node->body);
-		printf("L%d:\n", l_st);
+		printf("$$L%d:\n", l_st);
 
 		emit_code(node->right);
 		if (node->right && node->right->int_val >= 0) free_register(node->right->int_val);
 
-		printf("    jmp L%d\nL%d:\n", l_co, l_en);
+		printf("    jmp $$L%d\n$$L%d:\n", l_co, l_en);
 		loop_stack_top--;
 		break;
 	}
 
-	case AST_BREAK: printf("    jmp L%d\n", loop_stack[loop_stack_top - 1].end_lbl); break;
-	case AST_CONTINUE: printf("    jmp L%d\n", loop_stack[loop_stack_top - 1].cond_lbl); break;
+	case AST_BREAK: printf("    jmp $$L%d\n", loop_stack[loop_stack_top - 1].end_lbl); break;
+	case AST_CONTINUE: printf("    jmp $$L%d\n", loop_stack[loop_stack_top - 1].cond_lbl); break;
 
 	case AST_RETURN: {
 		emit_code(node->left);
 		int r_val = node->left->int_val;
 
 		if (node->left->type.kind == TYPE_FLOAT) {
-			// Allocate a 4-byte temporary space on the stack to bridge to the FPU stack
 			printf("    sub esp, 4\n");
 			printf("    mov dword ptr [esp], %s\n", reg_names[r_val]);
-
-			// FLD loads the 32-bit float from memory onto the top of the FPU stack ST(0)
 			printf("    fld dword ptr [esp]\n");
 			printf("    add esp, 4\n");
 		}
 		else {
-			// Standard integer or pointer return route
 			printf("    mov eax, %s\n", reg_names[r_val]);
 		}
 
 		free_register(r_val);
+
+		// --- FIXED: ENFORCE IMMEDIATE EPILOGUE BALANCE UPON RETURN ---
+		printf("    mov esp, ebp\n");
+		printf("    pop ebp\n");
+		printf("    ret\n");
 		break;
 	}
 
@@ -728,7 +779,7 @@ void emit_code(ASTNode* node) {
 			emit_code(curr_arg);
 			int r_val = curr_arg->int_val;
 
-			// CRITICAL FIX: If it's an identifier, pull its true type directly from the symbol table
+			// Pull true type details directly from the symbol table context
 			DataTypeKind arg_kind = curr_arg->type.kind;
 			if (curr_arg->kind == AST_IDENT) {
 				Symbol* sym = lookup_symbol(curr_arg->name);
@@ -739,56 +790,42 @@ void emit_code(ASTNode* node) {
 
 			// Perform the push layout using the verified type context data
 			if (arg_kind == TYPE_FLOAT) {
-				// 1. Move the 32-bit raw float bits to XMM
 				printf("    movd xmm0, %s\n", reg_names[r_val]);
-
-				// 2. Perform hardware promotion from 32-bit Float to 64-bit Double
 				printf("    cvtss2sd xmm0, xmm0\n");
-
-				// 3. Substack allocation space for the 8-byte double payload
 				printf("    sub esp, 8\n");
-
-				// 4. Move 64-bit double directly onto the stack layout frame
 				printf("    movsd qword ptr [esp], xmm0\n");
-
 				total_stack_bytes += 8;
 			}
 			else {
-				// Standard 32-bit Integer variable or String base memory address label pointer
 				printf("    push %s\n", reg_names[r_val]);
 				total_stack_bytes += 4;
 			}
 			free_register(r_val);
 		}
 
+		// Execute the procedural jump pipeline
 		printf("    call %s\n", node->name);
 
+		// Allocate the tracking register for the return value FIRST
+		int r = allocate_register();
+
+		// Determine if the called function returns a float
+		Symbol* func_sym = lookup_symbol(node->name);
+		if (func_sym && func_sym->type.kind == TYPE_FLOAT) {
+			printf("    sub esp, 4\n");
+			printf("    fstp dword ptr [esp]\n");
+			printf("    mov %s, dword ptr [esp]\n", reg_names[r]);
+			printf("    add esp, 4\n");
+			node->type.kind = TYPE_FLOAT;
+		}
+		else {
+			printf("    mov %s, eax\n", reg_names[r]);
+		}
+
+		// Balance the caller argument stack frame AFTER capturing the return register state safely
 		if (total_stack_bytes > 0) {
 			printf("    add esp, %d\n", total_stack_bytes);
 		}
-
-		int r = allocate_register();
-
-
-		// FIXED: Determine if the called function is registered as returning a float
-		Symbol* func_sym = lookup_symbol(node->name);
-		if (func_sym && func_sym->type.kind == TYPE_FLOAT) {
-			// Pull the float off the hardware FPU stack ST(0) into a temporary stack slot
-			printf("    sub esp, 4\n");
-			printf("    fstp dword ptr [esp]\n");
-
-			// Move the raw float bits back into our managed general purpose register
-			printf("    mov %s, dword ptr [esp]\n", reg_names[r]);
-			printf("    add esp, 4\n");
-
-			node->type.kind = TYPE_FLOAT; // Ensure the call expression node is flagged as a float!
-		}
-		else {
-			// Standard integer or pointer payload collection
-			printf("    mov %s, eax\n", reg_names[r]);
-		}
-		//printf("    mov %s, eax\n", reg_names[r]);
-
 
 		node->int_val = r;
 		break;
@@ -914,7 +951,7 @@ void emit_code(ASTNode* node) {
 			if (s->kind == AST_CASE) {
 				s->op = gen_label(); // Generate and assign an assembly label ID to this specific case node
 				printf("    cmp %s, %d\n", reg_names[r_cond], s->int_val);
-				printf("    je L%d\n", s->op);
+				printf("    je $$L%d\n", s->op);
 			}
 			else if (s->kind == AST_DEFAULT) {
 				s->op = gen_label(); // Generate label ID for default
@@ -926,10 +963,10 @@ void emit_code(ASTNode* node) {
 
 		// If a default block exists, jump to it if no cases matched. Otherwise, jump to the end.
 		if (l_default != -1) {
-			printf("    jmp L%d\n", l_default);
+			printf("    jmp $$L%d\n", l_default);
 		}
 		else {
-			printf("    jmp L%d\n", l_end);
+			printf("    jmp $$L%d\n", l_end);
 		}
 
 		// --- PASS 2: GENERATE INNER STATEMENTS BODY ---
@@ -938,7 +975,7 @@ void emit_code(ASTNode* node) {
 		while (s) {
 			if (s->kind == AST_CASE || s->kind == AST_DEFAULT) {
 				// Emit the matching execution entry target label point
-				printf("L%d:\n", s->op);
+				printf("$$L%d:\n", s->op);
 			}
 			else {
 				emit_code(s);
@@ -952,7 +989,7 @@ void emit_code(ASTNode* node) {
 		}
 
 		// Emit terminating exit target frame boundary
-		printf("L%d:\n", l_end);
+		printf("$$L%d:\n", l_end);
 		loop_stack_top--; // Pop switch frame off the stack
 		break;
 	}

@@ -68,8 +68,9 @@ int main(int argc, char* argv[]) {
 
 	// All internal compiler printfs hit this temporary layout automatically
 	printf(".model flat, c\n");
-	printf(".code\n");
-	printf("extern printf:proc\n\n");
+	printf("option casemap:none\n"); //Preserves case sensitivity for link matches
+	printf("extern printf:proc\n");
+	printf(".code\n\n");
 
 	is_codegen_phase = 0;
 
@@ -90,6 +91,9 @@ int main(int argc, char* argv[]) {
 		void clear_local_symbols(void);
 		clear_local_symbols();
 	}
+
+	void flush_global_data_segment(void);
+	flush_global_data_segment();
 
 	printf("end\n");
 	fflush(stdout);
