@@ -173,7 +173,8 @@ ASTNode* parse_unary(void) {
 
 		if (current_op == TOKEN_AMP) {
 			n->type.kind = TYPE_POINTER;
-			n->type.base_type = &(n->left->type);
+			n->type.base_type = (DataType*)calloc(1, sizeof(DataType));
+			*(n->type.base_type) = n->left->type;
 		}
 		else if (current_op == TOKEN_STAR) {
 			if (n->left->type.kind == TYPE_POINTER && n->left->type.base_type) {
@@ -594,9 +595,9 @@ ASTNode* parse_stmt(void) {
 	ASTNode* n = parse_expr();
 	match(TOKEN_SEMI);
 
-	if (n) {
-		n->next = NULL; // FIX: Force-clear lookahead pointers to prevent infinite block linking loops!
-	}
+	//if (n) {
+	//	n->next = NULL; // FIX: Force-clear lookahead pointers to prevent infinite block linking loops!
+	//}
 
 	return n;
 }

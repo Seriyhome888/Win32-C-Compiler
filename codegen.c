@@ -418,7 +418,9 @@ void emit_code(ASTNode* node) {
 
 	case AST_ARRAY_ACCESS: {
 		ASTNode* base = node;
-		while (base->left->kind == AST_ARRAY_ACCESS) base = base->left;
+		while (base->left && base->left->kind == AST_ARRAY_ACCESS) {
+			base = base->left;
+		}
 
 		Symbol* sym = lookup_symbol(base->left->name);
 		if (!sym) {
@@ -428,25 +430,31 @@ void emit_code(ASTNode* node) {
 
 		int dim = 0, r_off = -1;
 		compile_array_offset(node, &dim, sym, &r_off);
+
+		// Each element is 4 bytes wide (32-bit int/float), scale the offset index
 		printf("    shl %s, 2\n", reg_names[r_off]);
 
 		int r_ad = allocate_register();
 
 		if (sym->offset < 0) {
-			// Stack arrays live below EBP: base address calculation
+			// Stack arrays live below EBP. 
+			// sym->offset is already negative (e.g. -100). Use its absolute value to calculate base.
 			printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-			// Subtract the positive index offset to go deeper into the stack allocation space
+			// Subtract the shifted offset to step downward into the stack array allocation layout
 			printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 		else {
-			// Global/argument pointers live above EBP: add the index offset
+			// Global arrays or reference arguments live above EBP
 			printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 
+		free_register(r_off);
+
+		// CRITICAL FIX: Since we are evaluating an r-value read expression here, 
+		// we safely dereference the address right now to load the final integer value into the register.
 		printf("    mov %s, dword ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
 
-		free_register(r_off);
 		node->int_val = r_ad;
 		break;
 	}
@@ -601,7 +609,9 @@ void emit_code(ASTNode* node) {
 		// Case D: Standard / Contiguous Array Cell Target Assignment (e.g., matrix[1][2] = 88;)
 		else if (node->left->kind == AST_ARRAY_ACCESS) {
 			ASTNode* base = node->left;
-			while (base->left->kind == AST_ARRAY_ACCESS) base = base->left;
+			while (base->left && base->left->kind == AST_ARRAY_ACCESS) {
+				base = base->left;
+			}
 
 			Symbol* sym = lookup_symbol(base->left->name);
 			if (!sym) {
@@ -610,19 +620,23 @@ void emit_code(ASTNode* node) {
 			}
 
 			int dim = 0, r_off = -1;
+			// 1. Calculate the scaled matrix index offset
 			compile_array_offset(node->left, &dim, sym, &r_off);
 			printf("    shl %s, 2\n", reg_names[r_off]);
 
 			int r_ad = allocate_register();
+
+			// 2. Resolve the target base pointer address configuration
 			if (sym->offset < 0) {
 				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-				printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]); // <-- FIXED SIGNAGE
+				printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 			}
 			else {
 				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
 				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 			}
 
+			// 3. Perform a direct memory write block to save 'rv' safely into the evaluated space
 			if (sym->type.kind == TYPE_FLOAT) {
 				if (node->right->type.kind == TYPE_INT) {
 					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
