@@ -692,7 +692,19 @@ ASTNode* parse_program(void) {
 	// 6. Parse function argument lists
 	match(TOKEN_LPAREN);
 	int arg_off = 8; // Standard EBP offset tracking for arguments (EBP+8, EBP+12...)
+	int is_var = 0;
+
 	while (cur_tok.type != TOKEN_RPAREN) {
+		if (cur_tok.type == TOKEN_ELLIPSIS) {
+			is_var = 1;
+			match(TOKEN_ELLIPSIS);
+			if (cur_tok.type != TOKEN_RPAREN) {
+				printf("Parsing Error: Ellipsis must be the final parameter.\n");
+				exit(1);
+			}
+			break;
+		}
+
 		DataType pt;
 		memset(&pt, 0, sizeof(pt));
 		pt.kind = TYPE_INT;
@@ -727,11 +739,12 @@ ASTNode* parse_program(void) {
 	}
 	match(TOKEN_RPAREN);
 
+	func_sym->is_variadic = is_var;
+
 	// 7. Generate execution AST structure for the function body
 	ASTNode* n = create_node(AST_FUNC_DECL);
 	strcpy(n->name, name);
 	n->body = parse_stmt();
-
 
 	// NEW: Save the calculated size inside the function node's value property
 // Round it up to a 16-byte boundary to keep the x86 stack aligned properly, 

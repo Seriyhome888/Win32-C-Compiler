@@ -143,7 +143,26 @@ Token next_token(void) {
 	case ':': tok.type = TOKEN_COLON; ch = fgetc(src_file); break;
 	case ';': tok.type = TOKEN_SEMI; ch = fgetc(src_file); break;
 	case ',': tok.type = TOKEN_COMMA; ch = fgetc(src_file); break;
-	case '.': tok.type = TOKEN_PERIOD; ch = fgetc(src_file); break;
+
+	case '.':
+	{
+		int next1 = fgetc(src_file);
+		if (next1 == '.') {
+			int next2 = fgetc(src_file);
+			if (next2 == '.') {
+				tok.type = TOKEN_ELLIPSIS;
+				strcpy(tok.lexeme, "...");
+				ch = fgetc(src_file); // advance to next character
+				return tok;
+			}
+			ungetc(next2, src_file);
+		}
+		ungetc(next1, src_file);
+		tok.type = TOKEN_PERIOD;
+		ch = fgetc(src_file);
+		break;
+	}
+
 	case '(': tok.type = TOKEN_LPAREN; ch = fgetc(src_file); break;
 	case ')': tok.type = TOKEN_RPAREN; ch = fgetc(src_file); break;
 	case '{': tok.type = TOKEN_LBRACE; ch = fgetc(src_file); break;

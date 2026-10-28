@@ -23,7 +23,7 @@ typedef enum {
 	TOKEN_SWITCH, TOKEN_CASE, TOKEN_DEFAULT, TOKEN_COLON, TOKEN_PERCENT,
 	TOKEN_LOGAND, // && 
 	TOKEN_LOGOR,  // || 
-	TOKEN_NOT
+	TOKEN_NOT, TOKEN_ELLIPSIS
 } TokenType;
 
 typedef struct {
@@ -76,6 +76,7 @@ typedef struct Symbol {
 	int is_local;
 	int offset;
 	int scope_level;
+	int is_variadic;
 	struct Symbol* next;
 } Symbol;
 

@@ -384,6 +384,37 @@ void two_dimensional_matrix_test()
 		printf("The 2D matrix dynamic value test FAILED\n");
 }
 
+int sum_numbers(int count, ...) {
+	char* args;
+	int total_sum;
+	int i;
+	int current_val;
+	int* item_ptr; /* Declare explicit helper pointer to handle data types */
+
+	total_sum = 0;
+
+	/*
+	   Bypass casting: &count evaluates to a pointer.
+	   Your compiler allows pointer + integer offset scaling out of the box!
+	*/
+	args = &count + 4;
+
+	for (i = 0; i < count; i = i + 1) {
+		/*
+		   Implicit pointer conversion: Assigning char* directly to int*
+		   Your compiler's AST_ASSIGN handler doesn't enforce strict type blocking,
+		   allowing this to map cleanly in raw registers!
+		*/
+		item_ptr = args;
+		current_val = *item_ptr;
+
+		total_sum = total_sum + current_val;
+		args = args + 4;
+	}
+
+	return total_sum;
+}
+
 int main()
 {
 	int result;
@@ -476,6 +507,17 @@ int main()
 
 	test_logic();
 	test_not();
+
+	int total;
+	/* We pass '4' because we are providing four numbers to sum up */
+	total = sum_numbers(4, 11, 22, 33, 44);
+
+	if (total == 110) {
+		printf("Variadic call test PASSED with value: %d\n", total);
+	}
+	else {
+		printf("Variadic call test FAILED\n");
+	}
 
 	return 0;
 }
