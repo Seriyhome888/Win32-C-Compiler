@@ -9,6 +9,20 @@ int local_offset = 0;
 
 int current_scope_level = 0;
 
+static ASTNode* ensure_float_node(ASTNode* node) {
+	if (!node) return NULL;
+	if (node->type.kind == TYPE_INT || node->type.kind == TYPE_CHAR) {
+		// Create an explicit implicit-promotion type node
+		ASTNode* cast_node = create_node(AST_UNOP);
+		cast_node->op = TOKEN_FLOAT_LIT; // Reuse internal token representation as a marker
+		cast_node->left = node;
+		memset(&(cast_node->type), 0, sizeof(DataType));
+		cast_node->type.kind = TYPE_FLOAT;
+		return cast_node;
+	}
+	return node;
+}
+
 void enter_scope(void) {
 	current_scope_level++;
 }
@@ -108,39 +122,47 @@ ASTNode* parse_primary(void) {
 		n = create_node(AST_LITERAL); n->type.kind = TYPE_POINTER;
 		strcpy(n->name, cur_tok.lexeme); match(TOKEN_STRING); return n;
 	}
-
+		
 	if (cur_tok.type == TOKEN_IDENT) {
-		char name[64]; strcpy(name, cur_tok.lexeme); match(TOKEN_IDENT);
+		char name[64];
+		strcpy(name, cur_tok.lexeme);
+		match(TOKEN_IDENT);
+
 		if (cur_tok.type == TOKEN_LPAREN) { // Function Call
-			match(TOKEN_LPAREN); n = create_node(AST_CALL); strcpy(n->name, name);
+			match(TOKEN_LPAREN);
+			n = create_node(AST_CALL);
+			strcpy(n->name, name);
 			ASTNode** arg_tail = &(n->left);
 			while (cur_tok.type != TOKEN_RPAREN) {
-				*arg_tail = parse_expr(); (*arg_tail)->next = NULL;
+				*arg_tail = parse_expr();
+				(*arg_tail)->next = NULL;
 				arg_tail = &((*arg_tail)->next);
 				if (cur_tok.type == TOKEN_COMMA) match(TOKEN_COMMA);
 			}
-			match(TOKEN_RPAREN); return n;
+			match(TOKEN_RPAREN);
+			return n;
 		}
 
-		// FIXED: Create identifier node and instantly bind its verified type from the symbol table
+		// FIXED: Create identifier node and completely clean type layout
 		n = create_node(AST_IDENT);
 		strcpy(n->name, name);
 
 		Symbol* sym = lookup_symbol(name);
 		if (sym) {
-			n->type = sym->type; // Pull dimensions, pointer kind, and base type info
+			n->type = sym->type; // Pull verified dimensions and base type context
 		}
 		else {
-			// Fallback default for variables declared later or global externs
+			// Safe explicit clean slate fallback structure configuration
+			memset(&(n->type), 0, sizeof(DataType));
 			n->type.kind = TYPE_INT;
 		}
 		return n;
 	}
 
-
 	if (cur_tok.type == TOKEN_LPAREN) {
 		match(TOKEN_LPAREN); n = parse_expr(); match(TOKEN_RPAREN); return n;
 	}
+
 	return NULL;
 }
 
@@ -200,17 +222,21 @@ ASTNode* parse_unary(void) {
 ASTNode* parse_mul(void) {
 	ASTNode* n = parse_unary();
 	while (cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_SLASH || cur_tok.type == TOKEN_PERCENT) {
-		ASTNode* parent = create_node(AST_BINOP); parent->op = cur_tok.type;
-		parent->left = n; match(cur_tok.type); parent->right = parse_unary();
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = cur_tok.type;
+		parent->left = n;
+		match(cur_tok.type);
+		parent->right = parse_unary();
 
-		// TYPE PROPAGATION: If either side is a float, the result is a float
+		// FIXED: Force underlying operand sub-trees to promote up explicitly
 		if (parent->left->type.kind == TYPE_FLOAT || parent->right->type.kind == TYPE_FLOAT) {
+			parent->left = ensure_float_node(parent->left);
+			parent->right = ensure_float_node(parent->right);
 			parent->type.kind = TYPE_FLOAT;
 		}
 		else {
 			parent->type.kind = TYPE_INT;
 		}
-
 		n = parent;
 	}
 	return n;
@@ -219,17 +245,21 @@ ASTNode* parse_mul(void) {
 ASTNode* parse_add(void) {
 	ASTNode* n = parse_mul();
 	while (cur_tok.type == TOKEN_PLUS || cur_tok.type == TOKEN_MINUS) {
-		ASTNode* parent = create_node(AST_BINOP); parent->op = cur_tok.type;
-		parent->left = n; match(cur_tok.type); parent->right = parse_mul();
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = cur_tok.type;
+		parent->left = n;
+		match(cur_tok.type);
+		parent->right = parse_mul();
 
-		// TYPE PROPAGATION: If either side is a float, the result is a float
+		// FIXED: Force underlying operand sub-trees to promote up explicitly
 		if (parent->left->type.kind == TYPE_FLOAT || parent->right->type.kind == TYPE_FLOAT) {
+			parent->left = ensure_float_node(parent->left);
+			parent->right = ensure_float_node(parent->right);
 			parent->type.kind = TYPE_FLOAT;
 		}
 		else {
 			parent->type.kind = TYPE_INT;
 		}
-
 		n = parent;
 	}
 	return n;
@@ -244,13 +274,12 @@ ASTNode* parse_relational(void) {
 		match(cur_tok.type);
 		parent->right = parse_add();
 
-		// FORCE PROPAGATION: If either compared side is a float, flag the node!
+		// FIXED: Promote children but force the evaluation condition itself to remain TYPE_INT
 		if (parent->left->type.kind == TYPE_FLOAT || parent->right->type.kind == TYPE_FLOAT) {
-			parent->type.kind = TYPE_FLOAT;
+			parent->left = ensure_float_node(parent->left);
+			parent->right = ensure_float_node(parent->right);
 		}
-		else {
-			parent->type.kind = TYPE_INT;
-		}
+		parent->type.kind = TYPE_INT; // Boolean validation outputs are integer flags (0 or 1)
 		n = parent;
 	}
 	return n;

@@ -459,12 +459,11 @@ void emit_code(ASTNode* node) {
 		break;
 	}
 
+						 // REPLACE your AST_ASSIGN and AST_UNOP logic handlers inside emit_code() with this:
 	case AST_ASSIGN: {
-		// 1. ADVANCED OPTIMIZATION: Check if we are capturing an address-of assignment directly (e.g., ptr = &bob;)
-		if (node->left->kind == AST_IDENT && node->right->kind == AST_UNOP && node->right->op == TOKEN_AMP) {
-			node->int_val = -1;
+		node->int_val = -1; // FIXED: Proactively force uninitialized state to block double-frees
 
-			// Resolve the inner symbol directly instead of executing right-hand child sub-nodes
+		if (node->left->kind == AST_IDENT && node->right->kind == AST_UNOP && node->right->op == TOKEN_AMP) {
 			Symbol* right_sym = lookup_symbol(node->right->left->name);
 			Symbol* left_sym = lookup_symbol(node->left->name);
 
@@ -492,12 +491,9 @@ void emit_code(ASTNode* node) {
 			return;
 		}
 
-		// 2. FALLBACK STANDARD PIPELINE: Evaluate the right-hand value expression first
-		node->int_val = -1;
 		emit_code(node->right);
-		int rv = node->right->int_val; // Register holding the right-hand evaluated value
+		int rv = node->right->int_val;
 
-		// Case A: Assignment to a standard local identifier variable (e.g., x = 5;)
 		if (node->left->kind == AST_IDENT) {
 			Symbol* sym = lookup_symbol(node->left->name);
 			if (!sym) {
@@ -506,127 +502,56 @@ void emit_code(ASTNode* node) {
 			}
 
 			if (sym->type.kind == TYPE_POINTER) {
-				if (sym->offset < 0) {
-					printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
-				}
-				else {
-					printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
-				}
+				if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
+				else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
 			}
 			else if (sym->type.kind == TYPE_CHAR) {
-				// Use 8-bit sub-register array to write exactly 1 byte down to stack memory!
-				if (sym->offset < 0) {
-					printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, reg_names_8[rv]);
-				}
-				else {
-					printf("    mov byte ptr [ebp + %d], %s\n", sym->offset, reg_names_8[rv]);
-				}
-			}
-			else if (sym->type.kind == TYPE_FLOAT) {
-				if (node->right->type.kind == TYPE_INT) {
-					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
-					if (sym->offset < 0) {
-						printf("    movss dword ptr [ebp - %d], xmm0\n", -sym->offset);
-					}
-					else {
-						printf("    movss dword ptr [ebp + %d], xmm0\n", sym->offset);
-					}
-				}
-				else {
-					if (sym->offset < 0) {
-						printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
-					}
-					else {
-						printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
-					}
-				}
+				if (sym->offset < 0) printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, reg_names_8[rv]);
+				else printf("    mov byte ptr [ebp + %d], %s\n", sym->offset, reg_names_8[rv]);
 			}
 			else {
-				if (sym->offset < 0) {
-					printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
-				}
-				else {
-					printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
-				}
+				if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
+				else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
 			}
 			free_register(rv);
 		}
-
-		// Case B: Pointer Dereference Target Assignment (e.g., *ptr = 99;)
 		else if (node->left->kind == AST_UNOP && node->left->op == TOKEN_STAR) {
 			emit_code(node->left->left);
-			int r_addr = node->left->left->int_val; // Register containing target address memory point
-
+			int r_addr = node->left->left->int_val;
 			printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[rv]);
 			free_register(r_addr);
 			free_register(rv);
 		}
-
-		// Case C: Structure Member Access Assignment (e.g., bob.age = 30; or ptr->age = 31;)
 		else if (node->left->kind == AST_MEMBER_ACCESS) {
 			DataType target_type;
 			int calculated_offset = 0;
 
 			if (node->left->op == TOKEN_ARROW) {
-				emit_code(node->left->left); // Load target pointer address variable container
+				emit_code(node->left->left);
 				int r_ptr = node->left->left->int_val;
-
 				resolve_member_offset(node->left, &calculated_offset, &target_type);
-
-				if (target_type.kind == TYPE_FLOAT && node->right->type.kind == TYPE_INT) {
-					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
-					printf("    movss dword ptr [%s + %d], xmm0\n", reg_names[r_ptr], calculated_offset);
-				}
-				else {
-					printf("    mov dword ptr [%s + %d], %s\n", reg_names[r_ptr], calculated_offset, reg_names[rv]);
-				}
+				printf("    mov dword ptr [%s + %d], %s\n", reg_names[r_ptr], calculated_offset, reg_names[rv]);
 				free_register(r_ptr);
 			}
-			else { // Dot Operator Struct Layout Modification Route
+			else {
 				resolve_member_offset(node->left, &calculated_offset, &target_type);
-
-				if (target_type.kind == TYPE_FLOAT && node->right->type.kind == TYPE_INT) {
-					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
-					if (calculated_offset < 0) {
-						printf("    movss dword ptr [ebp - %d], xmm0\n", -calculated_offset);
-					}
-					else {
-						printf("    movss dword ptr [ebp + %d], xmm0\n", calculated_offset);
-					}
-				}
-				else {
-					if (calculated_offset < 0) {
-						printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
-					}
-					else {
-						printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
-					}
-				}
+				if (calculated_offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
+				else printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
 			}
 			free_register(rv);
 		}
-
-		// Case D: Standard / Contiguous Array Cell Target Assignment (e.g., matrix[1][2] = 88;)
 		else if (node->left->kind == AST_ARRAY_ACCESS) {
 			ASTNode* base = node->left;
-			while (base->left && base->left->kind == AST_ARRAY_ACCESS) {
-				base = base->left;
-			}
+			while (base->left && base->left->kind == AST_ARRAY_ACCESS) base = base->left;
 
 			Symbol* sym = lookup_symbol(base->left->name);
-			if (!sym) {
-				printf("\n; Backend Error: Assignment array target '%s' not found!\n", base->left->name);
-				exit(1);
-			}
+			if (!sym) { printf("\n; Backend Error: Array not found!\n"); exit(1); }
 
 			int dim = 0, r_off = -1;
-			// 1. Calculate the scaled matrix index offset
 			compile_array_offset(node->left, &dim, sym, &r_off);
 			printf("    shl %s, 2\n", reg_names[r_off]);
 
 			int r_ad = allocate_register();
-
-			// 2. Resolve the target base pointer address configuration
 			if (sym->offset < 0) {
 				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
 				printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]);
@@ -636,29 +561,78 @@ void emit_code(ASTNode* node) {
 				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 			}
 
-			// 3. Perform a direct memory write block to save 'rv' safely into the evaluated space
-			if (sym->type.kind == TYPE_FLOAT) {
-				if (node->right->type.kind == TYPE_INT) {
-					printf("    cvtsi2ss xmm0, %s\n", reg_names[rv]);
-					printf("    movss dword ptr [%s], xmm0\n", reg_names[r_ad]);
-				}
-				else {
-					printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
-				}
-			}
-			else {
-				printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
-			}
-
+			printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
 			free_register(r_ad);
 			free_register(r_off);
 			free_register(rv);
 		}
 
-		// Clean up node execution markers
 		if (node->right && node->right->int_val >= 0 && node->right->int_val < 3) {
 			free_register(node->right->int_val);
 			node->right->int_val = -1;
+		}
+		break;
+	}
+
+	case AST_UNOP: {
+		// FIXED: Catch our newly injected implicit-promotion conversion node
+		if (node->op == TOKEN_FLOAT_LIT) {
+			emit_code(node->left);
+			int rl = node->left->int_val;
+			int r_dest = allocate_register();
+
+			// Safely perform structural assembly transition using SSE2 instruction
+			printf("    cvtsi2ss xmm0, %s\n", reg_names[rl]);
+			printf("    movd %s, xmm0\n", reg_names[r_dest]);
+
+			free_register(rl);
+			node->int_val = r_dest;
+			break;
+		}
+
+		emit_code(node->left);
+		int rl = node->left->int_val;
+
+		if (node->op == TOKEN_STAR) {
+			int r = allocate_register();
+			printf("    mov %s, dword ptr [%s]\n", reg_names[r], reg_names[rl]);
+			free_register(rl);
+			node->int_val = r;
+		}
+		else if (node->op == TOKEN_AMP) {
+			if (node->left->kind == AST_IDENT) {
+				Symbol* sym = lookup_symbol(node->left->name);
+				if (!sym) { printf("Semantic Error: %s undefined.\n", node->left->name); exit(1); }
+				int r = allocate_register();
+				if (sym->offset < 0) printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+				else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+				free_register(rl);
+				node->int_val = r;
+			}
+			else {
+				printf("Backend Error: Lvalue required.\n"); exit(1);
+			}
+		}
+		else if (node->op == TOKEN_MINUS) {
+			if (node->type.kind == TYPE_FLOAT) {
+				int lbl = gen_label();
+				printf("    .data\nneg_mask_%d REAL4 -1.0\n    .code\n", lbl);
+				printf("    cvtsi2ss xmm1, dword ptr [neg_mask_%d]\n", lbl);
+				printf("    movd xmm0, %s\n", reg_names[rl]);
+				printf("    mulss xmm0, xmm1\n");
+				printf("    movd %s, xmm0\n", reg_names[rl]);
+			}
+			else {
+				printf("    neg %s\n", reg_names[rl]);
+			}
+			node->int_val = rl;
+		}
+		else if (node->op == TOKEN_NOT) {
+			printf("    cmp %s, 0\n", reg_names[rl]);
+			const char* target_byte = (rl == 0) ? "al" : (rl == 1) ? "cl" : "dl";
+			printf("    sete %s\n", target_byte);
+			printf("    movzx %s, %s\n", reg_names[rl], target_byte);
+			node->int_val = rl;
 		}
 		break;
 	}
@@ -842,80 +816,6 @@ void emit_code(ASTNode* node) {
 		}
 
 		node->int_val = r;
-		break;
-	}
-
-	case AST_UNOP: {
-		emit_code(node->left);
-		int rl = node->left->int_val; // Register containing child node's evaluated result
-
-		if (node->op == TOKEN_STAR) { // Pointer Dereference (*ptr)
-			int r = allocate_register();
-			// Perform indirect register displacement memory fetch: mov dest, dword ptr [src_reg]
-			printf("    mov %s, dword ptr [%s]\n", reg_names[r], reg_names[rl]);
-			free_register(rl);
-			node->int_val = r;
-		}
-
-		else if (node->op == TOKEN_AMP) { // Address-of Operator (&var)
-			if (node->left->kind == AST_IDENT) {
-				Symbol* sym = lookup_symbol(node->left->name);
-				if (!sym) {
-					printf("Semantic Error: Variable %s undefined for address-of operator.\n", node->left->name);
-					exit(1);
-				}
-				int r = allocate_register();
-
-				// FIXED: Enforce clean formatting output for address resolution
-				if (sym->offset < 0) {
-					printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
-				}
-				else {
-					printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
-				}
-
-				free_register(rl);
-				node->int_val = r;
-			}
-			else {
-				printf("Backend Error: Lvalue required as unary '&' operand.\n");
-				exit(1);
-			}
-		}
-
-		else if (node->op == TOKEN_MINUS) {
-			if (node->type.kind == TYPE_FLOAT) {
-				// For floating points, we XOR the register with itself or load a sign bit mask,
-				// or cleanly use a helper variable to switch the float's sign bits.
-				int lbl = gen_label();
-				printf("    .data\nneg_mask_%d REAL4 -1.0\n    .code\n", lbl);
-				printf("    cvtsi2ss xmm1, dword ptr [neg_mask_%d]\n", lbl);
-				printf("    movd xmm0, %s\n", reg_names[rl]);
-				printf("    mulss xmm0, xmm1\n");
-				printf("    movd %s, xmm0\n", reg_names[rl]);
-			}
-			else {
-				// Standard integer negation: flips the sign bits using native x86 hardware pipeline
-				printf("    neg %s\n", reg_names[rl]);
-			}
-			node->int_val = rl; // The result remains in the same register
-		}
-		else if (node->op == TOKEN_NOT) {
-			// Compare value inside the register against zero
-			printf("    cmp %s, 0\n", reg_names[rl]);
-
-			// Dynamically find matching 8-bit byte layout name sub-register ('al', 'cl', or 'dl')
-			const char* target_byte = (rl == 0) ? "al" : (rl == 1) ? "cl" : "dl";
-
-			// sete loads a 1 into the byte register if the comparison was equal to 0, otherwise 0
-			printf("    sete %s\n", target_byte);
-
-			// Clear top 24 bits of our 32-bit register cleanly via zero extension
-			printf("    movzx %s, %s\n", reg_names[rl], target_byte);
-
-			node->int_val = rl; // The inverted result stays right inside register 'rl'
-		}
-
 		break;
 	}
 
