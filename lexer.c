@@ -62,15 +62,15 @@ Token next_token(void) {
 		while (ch != '"' && ch != EOF) {
 			if (ch == '\\') {
 				int next_ch = fgetc(src_file);
-				if (next_ch == 'n') if (len < 63) tok.lexeme[len++] = '\n';
+				if (next_ch == 'n') if (len < 511) tok.lexeme[len++] = '\n';
 				else {
-					if (len < 63) tok.lexeme[len++] = ch;
-					if (len < 63) tok.lexeme[len++] = next_ch;
+					if (len < 511) tok.lexeme[len++] = ch;
+					if (len < 511) tok.lexeme[len++] = next_ch;
 				}
 				ch = fgetc(src_file);
 				continue;
 			}
-			if (len < 63) tok.lexeme[len++] = ch;
+			if (len < 511) tok.lexeme[len++] = ch;
 			ch = fgetc(src_file);
 		}
 		tok.lexeme[len] = '\0';

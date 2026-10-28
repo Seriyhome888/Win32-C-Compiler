@@ -28,7 +28,7 @@ typedef enum {
 
 typedef struct {
 	TokenType type;
-	char lexeme[64]; // Sized array bounds protection
+	char lexeme[512]; // Sized array bounds protection
 	int int_val;
 	double float_val;
 } Token;

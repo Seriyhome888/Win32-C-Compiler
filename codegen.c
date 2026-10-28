@@ -113,30 +113,33 @@ typedef struct { int cond_lbl; int end_lbl; } LoopFrame;
 static LoopFrame loop_stack[32];
 static int loop_stack_top = 0;
 
+int ensure_register_loaded(int r);
+
 void compile_array_offset(ASTNode* node, int* dim, Symbol* sym, int* r_out) {
 	if (node->left->kind == AST_ARRAY_ACCESS) {
-		// 1. Traverse down the left side first to process higher-level dimensions
+		// 1. Walk down to the deepest nested sub-bracket layer first
 		compile_array_offset(node->left, dim, sym, r_out);
 		(*dim)++;
 
-		// 2. Allocate temporary register to load the current dimension's multiplier width
+		// 2. Multiply the accumulated index by the current dimension's size bound
 		int r_mul = allocate_register();
 		printf("    mov %s, %d\n", reg_names[r_mul], sym->type.dimensions[*dim]);
 		printf("    imul %s, %s\n", reg_names[*r_out], reg_names[r_mul]);
 		free_register(r_mul);
 
-		// 3. Compile the right-side index expression of the current sub-bracket
+		// 3. Evaluate and add the current dimension index expression
 		emit_code(node->right);
 		int r_next = node->right->int_val;
+		r_next = ensure_register_loaded(r_next);
 		printf("    add %s, %s\n", reg_names[*r_out], reg_names[r_next]);
 		free_register(r_next);
 	}
 	else {
-		// Base case: We reached the deepest array access node (the identifier array base)
-		// Compile the outermost row index first
+		// Base Case: Deepest dimension layer (e.g., the first index parsed)
+		*dim = 0;
 		emit_code(node->right);
 		*r_out = node->right->int_val;
-		*dim = 0; // Initialize dimension depth pointer to dimension index 0
+		*r_out = ensure_register_loaded(*r_out);
 	}
 }
 
@@ -310,52 +313,49 @@ void emit_code(ASTNode* node) {
 
 			// --- NEW: INTEGER DIVISION & MODULO PIPELINE ---
 			else if (node->op == TOKEN_SLASH || node->op == TOKEN_PERCENT) {
-				// 1. We must force the left operand (dividend) into EAX (index 0)
-				// 2. We must free up EDX (index 2) so CDQ can clobber it safely
+				// 1. Force a strict manual preservation backup if eax or edx are active
+				int ext_eax_active = (reg_map[0] && rl != 0 && rr != 0);
+				int ext_edx_active = (reg_map[2] && rl != 2 && rr != 2);
 
-				// Save any values currently residing in eax/edx that aren't 'rl' or 'rr'
-				int save_eax = (rl != 0 && rr != 0 && reg_map[0]);
-				int save_edx = (rl != 2 && rr != 2 && reg_map[2]);
+				if (ext_eax_active) printf("    push eax\n");
+				if (ext_edx_active) printf("    push edx\n");
 
-				if (save_eax) printf("    push eax\n");
-				if (save_edx) printf("    push edx\n");
-
-				// Move left operand into eax if it isn't already there
+				// 2. Secure dividend input location alignment
 				if (rl != 0) {
 					printf("    mov eax, %s\n", reg_names[rl]);
 				}
 
-				// Sign-extend EAX into EDX (creates a 64-bit dividend across edx:eax)
+				// 3. Sign-extend EAX into EDX safely
 				printf("    cdq\n");
 
-				// Execute the division. This divides edx:eax by the register rr
-				// If rr happens to be eax or edx, we must account for where it went!
+				// 4. Handle rare case where divisor resides inside EAX/EDX after push mutations
 				if (rr == 0) {
-					// Exceptional case: if right operand was eax, it's already lost or overridden
-					printf("    ; Warning: potential division metadata collision\n");
+					// Divisor was in eax, but it's now overwritten by the dividend. 
+					// However, if ext_eax_active was true, the original rr value is on the stack!
+					printf("    idiv dword ptr [esp + %d]\n", (ext_edx_active ? 4 : 0));
 				}
-				printf("    idiv %s\n", reg_names[rr]);
-
-				// Collect the target output
-				if (node->op == TOKEN_SLASH) {
-					// Division result is stored in EAX
-					if (rl != 0) {
-						printf("    mov %s, eax\n", reg_names[rl]);
-					}
+				else if (rr == 2) {
+					// Divisor was in edx, which was clobbered by cdq. It's safe on top of the stack!
+					printf("    idiv dword ptr [esp]\n");
 				}
 				else {
-					// Modulo remainder result is stored in EDX
-					if (rl != 2) {
-						printf("    mov %s, edx\n", reg_names[rl]);
-					}
-					else {
-						// If rl was already index 2 (edx), it naturally has our remainder now!
-					}
+					printf("    idiv %s\n", reg_names[rr]);
 				}
 
-				// Restore clobbered registers back from stack frames
-				if (save_edx) printf("    pop edx\n");
-				if (save_eax) printf("    pop eax\n");
+				// 5. Extract output calculations to safe target slots before restoring context
+				if (node->op == TOKEN_SLASH) {
+					if (rl != 0) printf("    mov %s, eax\n", reg_names[rl]);
+				}
+				else {
+					if (rl != 2) printf("    mov %s, edx\n", reg_names[rl]);
+				}
+
+				// 6. Restore hardware tracking slots cleanly
+				if (ext_edx_active) printf("    pop edx\n");
+				if (ext_eax_active) printf("    pop eax\n");
+
+				free_register(rr);
+				node->int_val = rl;
 			}
 			// --- END OF NEW PIPELINE ---
 
@@ -430,39 +430,37 @@ void emit_code(ASTNode* node) {
 
 		int dim = 0, r_off = -1;
 		compile_array_offset(node, &dim, sym, &r_off);
+		r_off = ensure_register_loaded(r_off);
 
-		// Each element is 4 bytes wide (32-bit int/float), scale the offset index
+		// Scale the flat index by element width size (4 bytes for 32-bit types)
 		printf("    shl %s, 2\n", reg_names[r_off]);
 
 		int r_ad = allocate_register();
-
 		if (sym->offset < 0) {
-			// Stack arrays live below EBP. 
-			// sym->offset is already negative (e.g. -100). Use its absolute value to calculate base.
+			// Local stack memory allocation maps below EBP
 			printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-			// Subtract the shifted offset to step downward into the stack array allocation layout
-			printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]);
+			// Step upward into the allocated block memory layout
+			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 		else {
-			// Global arrays or reference arguments live above EBP
+			// Global reference arguments map above EBP
 			printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 
 		free_register(r_off);
 
-		// CRITICAL FIX: Since we are evaluating an r-value read expression here, 
-		// we safely dereference the address right now to load the final integer value into the register.
+		// Dereference computed target address cell to load the r-value payload
 		printf("    mov %s, dword ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
 
 		node->int_val = r_ad;
 		break;
 	}
 
-						 // REPLACE your AST_ASSIGN and AST_UNOP logic handlers inside emit_code() with this:
 	case AST_ASSIGN: {
-		node->int_val = -1; // FIXED: Proactively force uninitialized state to block double-frees
+		node->int_val = -1; // Force uninitialized state to block downstream bugs
 
+		// Special Case: Address-of Reference Mapping (& optimization)
 		if (node->left->kind == AST_IDENT && node->right->kind == AST_UNOP && node->right->op == TOKEN_AMP) {
 			Symbol* right_sym = lookup_symbol(node->right->left->name);
 			Symbol* left_sym = lookup_symbol(node->left->name);
@@ -491,9 +489,12 @@ void emit_code(ASTNode* node) {
 			return;
 		}
 
+		// 1. Evaluate the Right-Hand Value Expression
 		emit_code(node->right);
 		int rv = node->right->int_val;
+		rv = ensure_register_loaded(rv);
 
+		// 2. Safely Route Value to Target L-Value Left-Hand Variant
 		if (node->left->kind == AST_IDENT) {
 			Symbol* sym = lookup_symbol(node->left->name);
 			if (!sym) {
@@ -513,14 +514,13 @@ void emit_code(ASTNode* node) {
 				if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
 				else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
 			}
-			free_register(rv);
 		}
 		else if (node->left->kind == AST_UNOP && node->left->op == TOKEN_STAR) {
 			emit_code(node->left->left);
 			int r_addr = node->left->left->int_val;
+			r_addr = ensure_register_loaded(r_addr);
 			printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[rv]);
 			free_register(r_addr);
-			free_register(rv);
 		}
 		else if (node->left->kind == AST_MEMBER_ACCESS) {
 			DataType target_type;
@@ -529,6 +529,7 @@ void emit_code(ASTNode* node) {
 			if (node->left->op == TOKEN_ARROW) {
 				emit_code(node->left->left);
 				int r_ptr = node->left->left->int_val;
+				r_ptr = ensure_register_loaded(r_ptr);
 				resolve_member_offset(node->left, &calculated_offset, &target_type);
 				printf("    mov dword ptr [%s + %d], %s\n", reg_names[r_ptr], calculated_offset, reg_names[rv]);
 				free_register(r_ptr);
@@ -538,7 +539,6 @@ void emit_code(ASTNode* node) {
 				if (calculated_offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
 				else printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
 			}
-			free_register(rv);
 		}
 		else if (node->left->kind == AST_ARRAY_ACCESS) {
 			ASTNode* base = node->left;
@@ -549,12 +549,15 @@ void emit_code(ASTNode* node) {
 
 			int dim = 0, r_off = -1;
 			compile_array_offset(node->left, &dim, sym, &r_off);
+			r_off = ensure_register_loaded(r_off);
+
+			// Scale flat matrix position index to byte strides bounds
 			printf("    shl %s, 2\n", reg_names[r_off]);
 
 			int r_ad = allocate_register();
 			if (sym->offset < 0) {
 				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-				printf("    sub %s, %s\n", reg_names[r_ad], reg_names[r_off]);
+				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 			}
 			else {
 				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
@@ -564,13 +567,10 @@ void emit_code(ASTNode* node) {
 			printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
 			free_register(r_ad);
 			free_register(r_off);
-			free_register(rv);
 		}
 
-		if (node->right && node->right->int_val >= 0 && node->right->int_val < 3) {
-			free_register(node->right->int_val);
-			node->right->int_val = -1;
-		}
+		// Clean up the assigned value register cleanly
+		free_register(rv);
 		break;
 	}
 
