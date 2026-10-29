@@ -101,6 +101,7 @@ Token next_token(void) {
 		else if (strcmp(tok.lexeme, "switch") == 0) tok.type = TOKEN_SWITCH;   
 		else if (strcmp(tok.lexeme, "case") == 0) tok.type = TOKEN_CASE;       
 		else if (strcmp(tok.lexeme, "default") == 0) tok.type = TOKEN_DEFAULT; 
+		else if (strcmp(tok.lexeme, "typedef") == 0) tok.type = TOKEN_TYPEDEF;
 		else tok.type = TOKEN_IDENT;
 		return tok;
 	}

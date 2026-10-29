@@ -9,6 +9,71 @@ int local_offset = 0;
 
 int current_scope_level = 0;
 
+static int is_type_name(Token tok) {
+	if (tok.type == TOKEN_CHAR) return 1;
+	if (tok.type == TOKEN_STRUCT || tok.type == TOKEN_UNION) return 1;
+	if (tok.type == TOKEN_IDENT) {
+		if (strcmp(tok.lexeme, "int") == 0 || strcmp(tok.lexeme, "float") == 0) {
+			return 1;
+		}
+		// Check if the identifier has been registered as a custom type alias
+		Symbol* sym = lookup_symbol(tok.lexeme);
+		if (sym && sym->is_typedef) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+void match(TokenType type);
+
+static DataType parse_base_type(void) {
+	DataType vt;
+	memset(&vt, 0, sizeof(vt));
+
+	if (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION) {
+		int is_u = (cur_tok.type == TOKEN_UNION);
+		match(cur_tok.type);
+
+		// If there's an immediate opening brace, it's an inline definition
+		if (cur_tok.type == TOKEN_LBRACE) {
+			// Unfortunatley parse_struct_or_union_declaration creates an AST node.
+			// We can call it or lookup existing definitions if it's just a tag name:
+		}
+
+		strcpy(vt.struct_name, cur_tok.lexeme);
+		match(TOKEN_IDENT);
+		vt.kind = is_u ? TYPE_UNION : TYPE_STRUCT;
+	}
+	else if (cur_tok.type == TOKEN_CHAR) {
+		vt.kind = TYPE_CHAR;
+		match(TOKEN_CHAR);
+	}
+	else if (cur_tok.type == TOKEN_IDENT) {
+		if (strcmp(cur_tok.lexeme, "int") == 0) {
+			vt.kind = TYPE_INT;
+			match(TOKEN_IDENT);
+		}
+		else if (strcmp(cur_tok.lexeme, "float") == 0) {
+			vt.kind = TYPE_FLOAT;
+			match(TOKEN_IDENT);
+		}
+		else {
+			// It must be a typedef alias
+			Symbol* sym = lookup_symbol(cur_tok.lexeme);
+			if (sym && sym->is_typedef) {
+				vt = sym->type; // Pull underlying base type context completely
+				match(TOKEN_IDENT);
+			}
+			else {
+				fprintf(stderr, "Semantic Error: Unknown type identifier '%s'\n", cur_tok.lexeme);
+				exit(1);
+			}
+		}
+	}
+	return vt;
+}
+
 static ASTNode* ensure_float_node(ASTNode* node) {
 	if (!node) return NULL;
 	if (node->type.kind == TYPE_INT || node->type.kind == TYPE_CHAR) {
@@ -39,7 +104,7 @@ void clear_local_symbols(void) {
 	Symbol* prev = NULL;
 
 	while (current) {
-		if (current->is_local == 1) {
+		if (current->is_local == 1 && !current->is_typedef) {
 			// Unlink and free local variable tracker
 			Symbol* to_free = current;
 			if (prev == NULL) {
@@ -411,41 +476,49 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 }
 
 ASTNode* parse_stmt(void) {
+	// 1. HANDLE TYPEDEF REGISTRATION DIRECTLY
+	if (cur_tok.type == TOKEN_TYPEDEF) {
+		match(TOKEN_TYPEDEF);
 
-	int is_struct_var = (cur_tok.type == TOKEN_STRUCT);
-	int is_primitive_var = (cur_tok.type == TOKEN_IDENT && (strcmp(cur_tok.lexeme, "int") == 0 || strcmp(cur_tok.lexeme, "float") == 0))
-		||
-		(cur_tok.type == TOKEN_CHAR);
+		// Parse the base type definition layer
+		DataType base_t = parse_base_type();
 
-	if (is_primitive_var || is_struct_var) {
-		DataType vt;
-		memset(&vt, 0, sizeof(vt));
-
-		char s_name[64] = { 0 };
-
-		if (is_struct_var) {
-			match(TOKEN_STRUCT); // Consume 'struct' keyword
-			strcpy(s_name, cur_tok.lexeme);
-			match(TOKEN_IDENT);  // Consume the struct type name (e.g., "Person")
-
-			vt.kind = TYPE_STRUCT;
-			strcpy(vt.struct_name, s_name);
-		}
-		else {
-			if (cur_tok.type == TOKEN_CHAR) {
-				vt.kind = TYPE_CHAR;
-				match(TOKEN_CHAR);
-			}
-			else {
-				vt.kind = (strcmp(cur_tok.lexeme, "int") == 0) ? TYPE_INT : TYPE_FLOAT;
-				match(TOKEN_IDENT); // Consumes primitive type keyword ("int" or "float")
-			}
-		}
-
-		// Check for pointer asterisks (e.g., struct Person* ptr;)
+		// Handle potential pointer symbols linked to the alias (e.g. typedef int* int_ptr;)
 		while (cur_tok.type == TOKEN_STAR) {
 			match(TOKEN_STAR);
-			// Wrap current type into a pointer base layer
+			DataType* p_base = (DataType*)calloc(1, sizeof(DataType));
+			*p_base = base_t;
+			memset(&base_t, 0, sizeof(base_t));
+			base_t.kind = TYPE_POINTER;
+			base_t.base_type = p_base;
+		}
+
+		// Capture new alias identifier name
+		char alias_name[64];
+		strcpy(alias_name, cur_tok.lexeme);
+		match(TOKEN_IDENT);
+		match(TOKEN_SEMI);
+
+		// Register the new type entry inside the compiler symbol table
+		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
+		strcpy(sym->name, alias_name);
+		sym->type = base_t;
+		sym->is_typedef = 1; // Explicitly tag as type definition
+		sym->scope_level = current_scope_level;
+		sym->next = sym_table;
+		sym_table = sym;
+
+		// Return a structural placeholder variable decl that codegen ignores safely
+		return create_node(AST_VAR_DECL);
+	}
+
+	// 2. REWRITE VARIABLE DECLARATION DETECTION BY USING OUR TYPE NAME HELPER
+	if (is_type_name(cur_tok)) {
+		DataType vt = parse_base_type();
+
+		// Check for pointer asterisks (e.g., Person* ptr; or int_ptr* ptr_ptr;)
+		while (cur_tok.type == TOKEN_STAR) {
+			match(TOKEN_STAR);
 			DataType* base = (DataType*)calloc(1, sizeof(DataType));
 			if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 			*base = vt;
@@ -455,12 +528,12 @@ ASTNode* parse_stmt(void) {
 			vt.base_type = base;
 		}
 
-		// Capture the actual variable name identifier
+		// Capture the variable name identifier
 		char name[64];
 		strcpy(name, cur_tok.lexeme);
-		match(TOKEN_IDENT); // Consumes the variable name identifier
+		match(TOKEN_IDENT);
 
-		// Calculate total base allocations multiplier width
+		// Calculate total array bounds sizes if bracket segments exist
 		int total = 1;
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
@@ -472,72 +545,22 @@ ASTNode* parse_stmt(void) {
 		}
 		match(TOKEN_SEMI);
 
-		// Calculate how many bytes this variable actually needs on the stack frame
-		int var_size = 4; // Default primitives and pointers take 4 bytes in 32-bit x86
+		// Calculate layout width bytes allocation requirements
+		int var_size = 4;
 		if (vt.kind == TYPE_CHAR && vt.base_type == NULL) {
-			var_size = 1; // True char instance occupies exactly 1 byte!
+			var_size = 1;
 		}
-		else if (vt.kind == TYPE_STRUCT && vt.base_type == NULL) { // True structural instance, not a pointer
+		else if (vt.kind == TYPE_STRUCT && vt.base_type == NULL) {
 			struct StructEnv* env = lookup_struct(vt.struct_name);
-			if (env) {
-				var_size = env->size;
-			}
-			else {
-				fprintf(stderr, "Semantic Error: Local variable '%s' uses undefined struct type '%s'.\n", name, vt.struct_name);
-				exit(1);
-			}
+			if (env) var_size = env->size;
+			else { exit(1); }
 		}
 
-		// Update stack frame tracking parameters relative to custom calculated size bounds
 		local_offset += (var_size * total);
-
 		if (local_offset > max_function_stack_bytes) {
 			max_function_stack_bytes = local_offset;
 		}
 
-		// Register the new variable inside the compiler symbol table
-		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
-		strcpy(sym->name, name);
-		sym->type = vt;
-		sym->is_local = 1;
-		sym->offset = -local_offset;
-		sym->scope_level = current_scope_level;
-		sym->next = sym_table;
-		sym_table = sym;
-
-		ASTNode* n = create_node(AST_VAR_DECL);
-		strcpy(n->name, name);
-		return n;
-	}
-
-	if (cur_tok.type == TOKEN_IDENT && (strcmp(cur_tok.lexeme, "int") == 0 || strcmp(cur_tok.lexeme, "float") == 0)) {
-		DataType vt;
-		// Safely zero-initialize the local variable structure memory cell
-		memset(&vt, 0, sizeof(vt));
-
-		vt.kind = (strcmp(cur_tok.lexeme, "int") == 0) ? TYPE_INT : TYPE_FLOAT;
-		match(TOKEN_IDENT); // Consumes the type keyword identifier ("int" or "float")
-
-		char name[64];
-		strcpy(name, cur_tok.lexeme);
-		match(TOKEN_IDENT); // Consumes the variable name identifier
-
-		int total = 1;
-		// Handle optional array bracketing dimensions sequentially
-		while (cur_tok.type == TOKEN_LBRACKET) {
-			match(TOKEN_LBRACKET);
-			vt.is_array = 1;
-			vt.dimensions[vt.dim_count++] = cur_tok.int_val;
-			total *= cur_tok.int_val;
-			match(TOKEN_INT_LIT);
-			match(TOKEN_RBRACKET);
-		}
-		match(TOKEN_SEMI);
-
-		// Update stack frame tracking parameters
-		local_offset += (4 * total);
-
-		// Register the new variable inside the compiler symbol table
 		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
 		strcpy(sym->name, name);
 		sym->type = vt;
@@ -638,10 +661,17 @@ ASTNode* parse_program(void) {
 
 	// 2. INTERNAL LOOP: Drain ALL top-level type definitions (structs/unions)
 	// and register them into the environment structures before parsing code.
-	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION) {
-		parse_struct_or_union_declaration(cur_tok.type == TOKEN_UNION);
-		if (cur_tok.type == TOKEN_SEMI) {
-			match(TOKEN_SEMI);
+	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION || cur_tok.type == TOKEN_TYPEDEF) {
+		if (cur_tok.type == TOKEN_TYPEDEF) {
+			// Reuse our statement-level parsing block to register global typedef aliases seamlessly!
+			parse_stmt();
+		}
+		else
+		{
+			parse_struct_or_union_declaration(cur_tok.type == TOKEN_UNION);
+			if (cur_tok.type == TOKEN_SEMI) {
+				match(TOKEN_SEMI);
+			}
 		}
 	}
 

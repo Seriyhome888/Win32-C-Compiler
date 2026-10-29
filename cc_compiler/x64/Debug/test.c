@@ -9,6 +9,16 @@
 #define MULTIPLY(x, y) ((x) * (y))
 #define THRESHOLD 100
 
+// Top-Level Typedef Registrations
+typedef int CustomInt;
+typedef char* StringPtr;
+
+struct Point {
+	int x;
+	int y;
+};
+typedef struct Point PointType;
+
 int macro_test() {
 	int calculation;
 	calculation = MULTIPLY(5, 10 + 2); // Expands to: ((5) * (10 + 2))
@@ -417,6 +427,34 @@ int sum_numbers(int count, ...) {
 	return total_sum;
 }
 
+int test_typedef_pipeline() {
+	// 1. Verify basic primitive alias mapping
+	CustomInt score;
+	score = 75;
+
+	// 2. Verify structure type alias matching and member dot-access operations
+	PointType coordinate;
+	coordinate.x = 10;
+	coordinate.y = 20;
+
+	// 3. Verify pointer wrapper alignment logic
+	StringPtr text_message;
+	text_message = "Typedef Test PASSED\n";
+
+	int final_calculation;
+	final_calculation = score + coordinate.x + coordinate.y; // 75 + 10 + 20 = 105
+
+	if (final_calculation == 105) {
+		printf("Basic and Struct Typedef verification: PASSED\n");
+		printf(text_message);
+	}
+	else {
+		printf("Typedef implementation verification: FAILED\n");
+	}
+
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -520,6 +558,8 @@ int main()
 	else {
 		printf("Variadic call test FAILED\n");
 	}
+
+	test_typedef_pipeline();
 
 	return 0;
 }

@@ -23,7 +23,7 @@ typedef enum {
 	TOKEN_SWITCH, TOKEN_CASE, TOKEN_DEFAULT, TOKEN_COLON, TOKEN_PERCENT,
 	TOKEN_LOGAND, // && 
 	TOKEN_LOGOR,  // || 
-	TOKEN_NOT, TOKEN_ELLIPSIS
+	TOKEN_NOT, TOKEN_ELLIPSIS, TOKEN_TYPEDEF
 } TokenType;
 
 typedef struct {
@@ -78,6 +78,7 @@ typedef struct Symbol {
 	int scope_level;
 	int is_variadic;
 	int is_extern;         // 1 if it's an external prototype, 0 otherwise
+	int is_typedef;        // 1 if symbol is a type alias, 0 if regular variable
 	struct Symbol* next;
 } Symbol;
 
