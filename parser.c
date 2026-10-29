@@ -249,6 +249,66 @@ ASTNode* parse_postfix(void) {
 }
 
 ASTNode* parse_unary(void) {
+	if (cur_tok.type == TOKEN_SIZEOF) {
+		match(TOKEN_SIZEOF);
+
+		int size_result = 0;
+		match(TOKEN_LPAREN);
+
+		// Case A: A primitive keyword or type alias name is passed (e.g., sizeof(int) or sizeof(PointType))
+		if (is_type_name(cur_tok)) {
+			DataType vt = parse_base_type();
+			while (cur_tok.type == TOKEN_STAR) {
+				match(TOKEN_STAR);
+				DataType* base = (DataType*)calloc(1, sizeof(DataType));
+				*base = vt;
+				memset(&vt, 0, sizeof(vt));
+				vt.kind = TYPE_POINTER;
+				vt.base_type = base;
+			}
+			size_result = get_type_size(vt);
+		}
+		// Case B: An active expression or variable identifier is passed (e.g., sizeof(bob.age))
+		else {
+			ASTNode* expr_node = parse_expr();
+
+			// If it's a plain variable identifier, pull details from the symbol table
+			if (expr_node->kind == AST_IDENT) {
+				Symbol* sym = lookup_symbol(expr_node->name);
+				if (sym) {
+					size_result = get_type_size(sym->type);
+				}
+				else {
+					size_result = 4; // Fallback default
+				}
+			}
+			// Handle struct member configurations (e.g., sizeof(bob.salary))
+			else if (expr_node->kind == AST_MEMBER_ACCESS) {
+				DataType out_type;
+				int total_offset = 0;
+				// Use your existing member offset resolver tool to capture the type
+				resolve_member_offset(expr_node, &total_offset, &out_type);
+				size_result = get_type_size(out_type);
+			}
+			else {
+				// Fall back to evaluating the explicit evaluation node type context
+				size_result = get_type_size(expr_node->type);
+			}
+
+			// Free the parsed expression sub-tree since it isn't compiled to assembly
+			free(expr_node);
+		}
+
+		match(TOKEN_RPAREN);
+
+		// LOWER TO AN AST_LITERAL: Convert the evaluated sizeof into a constant literal node!
+		ASTNode* literal_node = create_node(AST_LITERAL);
+		literal_node->type.kind = TYPE_INT;
+		literal_node->int_val = size_result;
+
+		return literal_node;
+	}
+
 	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_MINUS || cur_tok.type == TOKEN_NOT) {
 		ASTNode* n = create_node(AST_UNOP);
 		n->op = cur_tok.type;
@@ -826,4 +886,47 @@ struct StructEnv* lookup_struct(const char* name) {
 		env = env->next;
 	}
 	return NULL;
+}
+
+int get_type_size(DataType type) {
+	// If it's a pointer type, it's always 4 bytes in a 32-bit x86 architecture
+	if (type.kind == TYPE_POINTER || type.base_type != NULL) {
+		return 4;
+	}
+
+	int base_size = 4; // Default baseline size for int/float
+	if (type.kind == TYPE_CHAR) {
+		base_size = 1;
+	}
+	else if (type.kind == TYPE_STRUCT) {
+		struct StructEnv* env = lookup_struct(type.struct_name);
+		if (env) {
+			base_size = env->size;
+		}
+		else {
+			fprintf(stderr, "Semantic Error: Sizeof undefined struct '%s'\n", type.struct_name);
+			exit(1);
+		}
+	}
+	else if (type.kind == TYPE_UNION) {
+		struct StructEnv* env = lookup_struct(type.struct_name);
+		if (env) {
+			base_size = env->size;
+		}
+		else {
+			fprintf(stderr, "Semantic Error: Sizeof undefined union '%s'\n", type.struct_name);
+			exit(1);
+		}
+	}
+
+	// If it's an array, multiply the base size by all dimensions
+	if (type.is_array) {
+		int total_elements = 1;
+		for (int i = 0; i < type.dim_count; i++) {
+			total_elements *= type.dimensions[i];
+		}
+		return base_size * total_elements;
+	}
+
+	return base_size;
 }

@@ -455,6 +455,41 @@ int test_typedef_pipeline() {
 	return 0;
 }
 
+// Add this near your other test functions
+void test_sizeof() {
+	int local_int;
+	char local_char;
+	int array_1d[10];
+	int matrix_2d[3][5];
+	struct Person normal_bob;
+	struct Person* ptr_bob;
+
+	printf("--- STARTING SIZEOF COMPILE-TIME VERIFICATION ---\n");
+
+	// 1. Primitive Tests
+	if (sizeof(int) == 4) printf("sizeof(int) PASSED\n"); else printf("sizeof(int) FAILED\n");
+	if (sizeof(char) == 1) printf("sizeof(char) PASSED\n"); else printf("sizeof(char) FAILED\n");
+
+	// 2. Variable Expression Tests
+	if (sizeof(local_int) == 4) printf("sizeof(local_int) PASSED\n"); else printf("sizeof(local_int) FAILED\n");
+	if (sizeof(local_char) == 1) printf("sizeof(local_char) PASSED\n"); else printf("sizeof(local_char) FAILED\n");
+
+	// 3. Pointer Size Tests (Always 4-bytes in your 32-bit architecture)
+	if (sizeof(int*) == 4) printf("sizeof(int*) PASSED\n"); else printf("sizeof(int*) FAILED\n");
+	if (sizeof(ptr_bob) == 4) printf("sizeof(ptr_bob) PASSED\n"); else printf("sizeof(ptr_bob) FAILED\n");
+
+	// 4. Array Dimension Boundary Tests
+	if (sizeof(array_1d) == 40) printf("sizeof(array_1d) PASSED\n"); else printf("sizeof(array_1d) FAILED\n");
+	if (sizeof(matrix_2d) == 60) printf("sizeof(matrix_2d) PASSED\n"); else printf("sizeof(matrix_2d) FAILED\n");
+
+	// 5. Compound Struct & Struct Member Access Tests
+	if (sizeof(struct Person) == 12) printf("sizeof(struct Person) PASSED\n"); else printf("sizeof(struct Person) FAILED\n");
+	if (sizeof(normal_bob) == 12) printf("sizeof(normal_bob) PASSED\n"); else printf("sizeof(normal_bob) FAILED\n");
+	if (sizeof(normal_bob.age) == 4) printf("sizeof(normal_bob.age) PASSED\n"); else printf("sizeof(normal_bob.age) FAILED\n");
+
+	printf("--- ENDING SIZEOF COMPILE-TIME VERIFICATION ---\n");
+}
+
 int main()
 {
 	int result;
@@ -560,6 +595,8 @@ int main()
 	}
 
 	test_typedef_pipeline();
+
+	test_sizeof();
 
 	return 0;
 }
