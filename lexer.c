@@ -36,7 +36,7 @@ Token next_token(void) {
 					}
 				}
 				if (ch == EOF) { // Fix: Prevent infinite loop if comment is unclosed
-					printf("Lexical Error: Unexpected EOF inside block comment.\n");
+					fprintf(stderr, "Lexical Error: Unexpected EOF inside block comment.\n");
 					exit(1);
 				}
 				continue;
@@ -138,7 +138,7 @@ Token next_token(void) {
 	case '|':
 		ch = fgetc(src_file);
 		if (ch == '|') { tok.type = TOKEN_LOGOR; ch = fgetc(src_file); }
-		else { printf("Lexical Error: Raw bitwise '|' unsupported.\n"); exit(1); }
+		else { fprintf(stderr, "Lexical Error: Raw bitwise '|' unsupported.\n"); exit(1); }
 	break;
 	case ':': tok.type = TOKEN_COLON; ch = fgetc(src_file); break;
 	case ';': tok.type = TOKEN_SEMI; ch = fgetc(src_file); break;
@@ -182,7 +182,7 @@ Token next_token(void) {
 		else tok.type = TOKEN_ASSIGN;
 		break;
 	default:
-		printf("Lexical Error: Unknown character: %c\n", ch);
+		fprintf(stderr, "Lexical Error: Unknown character: %c\n", ch);
 		exit(1);
 	}
 	return tok;

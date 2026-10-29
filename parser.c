@@ -93,7 +93,7 @@ Symbol* lookup_symbol(const char* name) {
 void match(TokenType type) {
 	if (cur_tok.type == type) cur_tok = next_token();
 	else {
-		printf("Syntax Error: Expected token type %d, got %s\n", type, cur_tok.lexeme);
+		fprintf(stderr, "Syntax Error: Expected token type %d, got %s\n", type, cur_tok.lexeme);
 		exit(1);
 	}
 }
@@ -447,7 +447,7 @@ ASTNode* parse_stmt(void) {
 			match(TOKEN_STAR);
 			// Wrap current type into a pointer base layer
 			DataType* base = (DataType*)calloc(1, sizeof(DataType));
-			if (!base) { printf("Fatal Error: Out of memory.\n"); exit(1); }
+			if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 			*base = vt;
 
 			memset(&vt, 0, sizeof(vt));
@@ -483,7 +483,7 @@ ASTNode* parse_stmt(void) {
 				var_size = env->size;
 			}
 			else {
-				printf("Semantic Error: Local variable '%s' uses undefined struct type '%s'.\n", name, vt.struct_name);
+				fprintf(stderr, "Semantic Error: Local variable '%s' uses undefined struct type '%s'.\n", name, vt.struct_name);
 				exit(1);
 			}
 		}
@@ -605,7 +605,7 @@ ASTNode* parse_stmt(void) {
 		ASTNode* n = create_node(AST_CASE);
 		match(TOKEN_CASE);
 		if (cur_tok.type != TOKEN_INT_LIT) {
-			printf("Syntax Error: C89 requires case labels to be constant integer literals.\n");
+			fprintf(stderr, "Syntax Error: C89 requires case labels to be constant integer literals.\n");
 			exit(1);
 		}
 		n->int_val = cur_tok.int_val; // Capture the constant value
@@ -687,7 +687,7 @@ ASTNode* parse_program(void) {
 			is_var = 1;
 			match(TOKEN_ELLIPSIS);
 			if (cur_tok.type != TOKEN_RPAREN) {
-				printf("Parsing Error: Ellipsis must be the final parameter.\n");
+				fprintf(stderr, "Parsing Error: Ellipsis must be the final parameter.\n");
 				exit(1);
 			}
 			break;
@@ -709,7 +709,7 @@ ASTNode* parse_program(void) {
 		while (cur_tok.type == TOKEN_STAR) {
 			match(TOKEN_STAR);
 			DataType* base = (DataType*)calloc(1, sizeof(DataType));
-			if (!base) { printf("Fatal Error: Out of memory.\n"); exit(1); }
+			if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 			*base = pt;
 			memset(&pt, 0, sizeof(pt));
 			pt.kind = TYPE_POINTER;
