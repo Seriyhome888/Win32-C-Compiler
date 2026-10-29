@@ -48,8 +48,9 @@ Token next_token(void) {
 			}
 			else {
 				ungetc(next_ch, src_file);
-				tok.type = TOKEN_SLASH;
 				ch = fgetc(src_file);
+				if (ch == '=') { tok.type = TOKEN_DIV_ASSIGN; ch = fgetc(src_file); }
+				else { tok.type = TOKEN_SLASH; }
 				return tok;
 			}
 		}
@@ -128,8 +129,16 @@ Token next_token(void) {
 	}
 
 	switch (ch) {
-	case '+': tok.type = TOKEN_PLUS; ch = fgetc(src_file); break;
-	case '*': tok.type = TOKEN_STAR; ch = fgetc(src_file); break;
+	case '+':
+		ch = fgetc(src_file);
+		if (ch == '=') { tok.type = TOKEN_ADD_ASSIGN; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_PLUS; }
+		break;
+	case '*':
+		ch = fgetc(src_file);
+		if (ch == '=') { tok.type = TOKEN_MUL_ASSIGN; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_STAR; }
+		break;
 	case '%': tok.type = TOKEN_PERCENT; ch = fgetc(src_file); break;
 	case '!': tok.type = TOKEN_NOT; ch = fgetc(src_file); break;
 	case '&':
@@ -173,9 +182,11 @@ Token next_token(void) {
 	case ']': tok.type = TOKEN_RBRACKET; ch = fgetc(src_file); break;
 	case '<': tok.type = TOKEN_LESS; ch = fgetc(src_file); break;
 	case '>': tok.type = TOKEN_GREATER; ch = fgetc(src_file); break;
+
 	case '-':
 		ch = fgetc(src_file);
 		if (ch == '>') { tok.type = TOKEN_ARROW; ch = fgetc(src_file); }
+		else if (ch == '=') { tok.type = TOKEN_SUB_ASSIGN; ch = fgetc(src_file); } // <-- ADD THIS
 		else tok.type = TOKEN_MINUS;
 		break;
 	case '=':

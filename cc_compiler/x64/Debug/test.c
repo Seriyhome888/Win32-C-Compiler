@@ -490,6 +490,47 @@ void test_sizeof() {
 	printf("--- ENDING SIZEOF COMPILE-TIME VERIFICATION ---\n");
 }
 
+int test_compound_operators() {
+	int a;
+	int b;
+	float x;
+
+	printf("--- STARTING COMPOUND ASSIGNMENT VERIFICATION ---\n");
+
+	// 1. Test += (Integer)
+	a = 10;
+	a += 5; // Desugars to: a = a + 5 -> 15
+	if (a == 15) printf("a += 5 PASSED with value: %d\n", a);
+	else printf("a += 5 FAILED\n");
+
+	// 2. Test -= (Integer)
+	b = 20;
+	b -= 7; // Desugars to: b = b - 7 -> 13
+	if (b == 13) printf("b -= 7 PASSED with value: %d\n", b);
+	else printf("b -= 7 FAILED\n");
+
+	// 3. Test *= (Integer mixed with expression)
+	a = 4;
+	a *= (2 + 3); // Desugars to: a = a * (2 + 3) -> 20
+	if (a == 20) printf("a *= (2+3) PASSED with value: %d\n", a);
+	else printf("a *= (2+3) FAILED\n");
+
+	// 4. Test /= (Integer division)
+	b = 45;
+	b /= 5; // Desugars to: b = b / 5 -> 9
+	if (b == 9) printf("b /= 5 PASSED with value: %d\n", b);
+	else printf("b /= 5 FAILED\n");
+
+	// 5. Test Floating-Point Promotion Compatibility
+	x = 10.5;
+	x += 2; // Desugars to: x = x + (float)2 -> 12.5
+	if (x == 12.5) printf("x += 2 (Float Promotion) PASSED with value: %f\n", x);
+	else printf("x += 2 (Float Promotion) FAILED\n");
+
+	printf("--- ENDING COMPOUND ASSIGNMENT VERIFICATION ---\n");
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -597,6 +638,8 @@ int main()
 	test_typedef_pipeline();
 
 	test_sizeof();
+
+	test_compound_operators();
 
 	return 0;
 }

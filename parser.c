@@ -440,15 +440,51 @@ ASTNode* parse_log_or(void) {
 
 ASTNode* parse_expr(void) {
 	ASTNode* n = parse_log_or();
-	if (cur_tok.type == TOKEN_ASSIGN) {
-		ASTNode* parent = create_node(AST_ASSIGN);
-		parent->left = n;
-		match(TOKEN_ASSIGN);
-		parent->right = parse_expr();
 
-		// FIXED: Propagate expression type completely to prevent mismatched assignments
-		parent->type = n->type;
-		n = parent;
+	if (cur_tok.type == TOKEN_ASSIGN || cur_tok.type == TOKEN_ADD_ASSIGN ||
+		cur_tok.type == TOKEN_SUB_ASSIGN || cur_tok.type == TOKEN_MUL_ASSIGN ||
+		cur_tok.type == TOKEN_DIV_ASSIGN) {
+
+		TokenType op_type = cur_tok.type;
+		match(op_type);
+
+		ASTNode* right_expr = parse_expr();
+		ASTNode* assignment_node = create_node(AST_ASSIGN);
+		assignment_node->left = n;
+
+		if (op_type == TOKEN_ASSIGN) {
+			assignment_node->right = right_expr;
+		}
+		else {
+			// --- DESUGARING TRANSFORMATION ---
+			// Maps: Variable [Op]= Expression  ->  Variable = Variable [Op] Expression
+			ASTNode* math_node = create_node(AST_BINOP);
+
+			if (op_type == TOKEN_ADD_ASSIGN) math_node->op = TOKEN_PLUS;
+			else if (op_type == TOKEN_SUB_ASSIGN) math_node->op = TOKEN_MINUS;
+			else if (op_type == TOKEN_MUL_ASSIGN) math_node->op = TOKEN_STAR;
+			else if (op_type == TOKEN_DIV_ASSIGN) math_node->op = TOKEN_SLASH;
+
+			// Re-use left-hand side structure cleanly 
+			math_node->left = n;
+			math_node->right = right_expr;
+
+			// Propagate data types completely for floating-point validation layers
+			if (math_node->left->type.kind == TYPE_FLOAT || math_node->right->type.kind == TYPE_FLOAT) {
+				extern ASTNode* ensure_float_node(ASTNode * node);
+				math_node->left = ensure_float_node(math_node->left);
+				math_node->right = ensure_float_node(math_node->right);
+				math_node->type.kind = TYPE_FLOAT;
+			}
+			else {
+				math_node->type.kind = TYPE_INT;
+			}
+
+			assignment_node->right = math_node;
+		}
+
+		assignment_node->type = n->type;
+		n = assignment_node;
 	}
 	return n;
 }
