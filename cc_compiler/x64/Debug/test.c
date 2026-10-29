@@ -1,3 +1,5 @@
+#include "stdio.h"
+
 #define INITIAL_VALUE 42
 #define STEP_INCREMENT 5
 

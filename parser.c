@@ -632,12 +632,12 @@ ASTNode* parse_stmt(void) {
 }
 
 ASTNode* parse_program(void) {
-	// 1. Reset localized variables and offsets for the incoming function frame
+	// 1. Reset localized stack tracking metrics for the incoming function frame
 	local_offset = 0;
 	current_scope_level = 0;
 
-	// 2. INTERNAL LOOP: Drain ALL top-level type definitions (structs/unions) 
-	// until we reach an actual function declaration or EOF.
+	// 2. INTERNAL LOOP: Drain ALL top-level type definitions (structs/unions)
+	// and register them into the environment structures before parsing code.
 	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION) {
 		parse_struct_or_union_declaration(cur_tok.type == TOKEN_UNION);
 		if (cur_tok.type == TOKEN_SEMI) {
@@ -645,53 +645,41 @@ ASTNode* parse_program(void) {
 		}
 	}
 
-	// 3. Gracefully handle files that end after global structure definitions
+	// 3. ROBUST RECOVERY: Aggressively catch EOF or trailing text debris
+	// (like "this is test file" at the bottom) to block unhandled lookahead crashes.
 	if (cur_tok.type == TOKEN_EOF) {
 		ASTNode* eof_node = create_node(AST_PROGRAM);
 		return eof_node;
 	}
 
-	// 4. Safely evaluate the function return type identifier (Allowing IDENT or VOID)
+	if (cur_tok.type != TOKEN_IDENT && cur_tok.type != TOKEN_VOID && cur_tok.type != TOKEN_CHAR) {
+		// A rogue layout token was hit out of scope. Force a clean exit state.
+		ASTNode* eof_node = create_node(AST_PROGRAM);
+		cur_tok.type = TOKEN_EOF;
+		return eof_node;
+	}
+
+	// 4. Evaluate the function return type identifier
 	DataTypeKind ret_kind = TYPE_INT; // Default fallback
-	if (cur_tok.type == TOKEN_IDENT || cur_tok.type == TOKEN_VOID) {
+	if (cur_tok.type == TOKEN_IDENT || cur_tok.type == TOKEN_VOID || cur_tok.type == TOKEN_CHAR) {
 		if (cur_tok.type == TOKEN_IDENT && strcmp(cur_tok.lexeme, "float") == 0) {
 			ret_kind = TYPE_FLOAT;
 		}
-		else if (cur_tok.type == TOKEN_VOID) {
-			// Optional: mapping a custom type kind for void if you expand cc.h later,
-			// otherwise TYPE_INT acts as the default fallback for standard stack tracking.
-			ret_kind = TYPE_INT;
+		else if (cur_tok.type == TOKEN_CHAR) {
+			ret_kind = TYPE_CHAR;
 		}
-
-		// Consume whichever token type was matched
+		// Consume whichever primitive return keyword token was matched
 		match(cur_tok.type);
 	}
-	else {
-		printf("Parsing Error: Expected function return type (ident or void), got: %s\n", cur_tok.lexeme);
-		exit(1);
-	}
 
-	// 5. Capture the name of the function
+	// 5. Capture the exact name string identifier of the function
 	char name[64];
 	strcpy(name, cur_tok.lexeme);
 	match(TOKEN_IDENT);
 
-	// Add function record to the global symbol table with the accurate return type!
-	Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
-	if (!func_sym) {
-		fprintf(stderr, "Out of memory during symbol allocation.\n");
-		exit(1);
-	}
-	strcpy(func_sym->name, name);
-	func_sym->type.kind = ret_kind; // Dynamic return type tracking
-	func_sym->is_local = 0;
-	func_sym->scope_level = 0;
-	func_sym->next = sym_table;
-	sym_table = func_sym;
-
-	// 6. Parse function argument lists
+	// 6. Parse Function Parameters List 
 	match(TOKEN_LPAREN);
-	int arg_off = 8; // Standard EBP offset tracking for arguments (EBP+8, EBP+12...)
+	int arg_off = 8; // Standard x86 32-bit EBP offset tracking for arguments (EBP+8, EBP+12...)
 	int is_var = 0;
 
 	while (cur_tok.type != TOKEN_RPAREN) {
@@ -707,25 +695,36 @@ ASTNode* parse_program(void) {
 
 		DataType pt;
 		memset(&pt, 0, sizeof(pt));
-		pt.kind = TYPE_INT;
 
-		if (strcmp(cur_tok.lexeme, "float") == 0) {
-			pt.kind = TYPE_FLOAT;
+		if (cur_tok.type == TOKEN_CHAR) {
+			pt.kind = TYPE_CHAR;
+			match(TOKEN_CHAR);
 		}
-		match(TOKEN_IDENT); // Consume type keyword
+		else {
+			pt.kind = (strcmp(cur_tok.lexeme, "float") == 0) ? TYPE_FLOAT : TYPE_INT;
+			match(TOKEN_IDENT); // Consume type name string
+		}
+
+		// Check for pointer argument layers (e.g., char* message)
+		while (cur_tok.type == TOKEN_STAR) {
+			match(TOKEN_STAR);
+			DataType* base = (DataType*)calloc(1, sizeof(DataType));
+			if (!base) { printf("Fatal Error: Out of memory.\n"); exit(1); }
+			*base = pt;
+			memset(&pt, 0, sizeof(pt));
+			pt.kind = TYPE_POINTER;
+			pt.base_type = base;
+		}
 
 		char p_name[64];
 		strcpy(p_name, cur_tok.lexeme);
-		match(TOKEN_IDENT); // Consume argument variable name
+		match(TOKEN_IDENT); // Consume parameter identifier string
 
 		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
-		if (!sym) {
-			fprintf(stderr, "Out of memory during symbol allocation.\n");
-			exit(1);
-		}
+		if (!sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 		strcpy(sym->name, p_name);
 		sym->type = pt;
-		sym->is_local = 1; // Marked local so it clears safely when function ends
+		sym->is_local = 1; // Temporarily link as local stack tracker variable
 		sym->offset = arg_off;
 		sym->scope_level = current_scope_level;
 		arg_off += 4;
@@ -739,19 +738,50 @@ ASTNode* parse_program(void) {
 	}
 	match(TOKEN_RPAREN);
 
-	func_sym->is_variadic = is_var;
+	// 7. CRITICAL HEADER PROTOTYPE LOOKAHEAD CHECK
+	if (cur_tok.type == TOKEN_SEMI) {
+		match(TOKEN_SEMI); // Consume terminating ';'
 
-	// 7. Generate execution AST structure for the function body
+		// Wipe the parameter symbols we just loaded since there's no actual execution body block
+		void clear_local_symbols(void);
+		clear_local_symbols();
+
+		// Append an explicit reference block to the symbol table tagged as an external import
+		Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
+		if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
+		strcpy(func_sym->name, name);
+		func_sym->type.kind = ret_kind;
+		func_sym->is_local = 0;
+		func_sym->is_extern = 1; // <-- Marked as External!
+		func_sym->is_variadic = is_var;
+		func_sym->next = sym_table;
+		sym_table = func_sym;
+
+		// Return an unmapped variable node frame that code generation naturally bypasses
+		ASTNode* empty_proto = create_node(AST_VAR_DECL);
+		return empty_proto;
+	}
+
+	// 8. Otherwise: It's a localized function containing a physical declaration body
+	Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
+	if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
+	strcpy(func_sym->name, name);
+	func_sym->type.kind = ret_kind;
+	func_sym->is_local = 0;
+	func_sym->is_extern = 0; // Local execution frame
+	func_sym->is_variadic = is_var;
+	func_sym->next = sym_table;
+	sym_table = func_sym;
+
+	// Parse out statement body blocks cleanly
 	ASTNode* n = create_node(AST_FUNC_DECL);
 	strcpy(n->name, name);
 	n->body = parse_stmt();
 
-	// NEW: Save the calculated size inside the function node's value property
-// Round it up to a 16-byte boundary to keep the x86 stack aligned properly, 
-// and add a 16-byte safety pad specifically to accommodate temporary register spilling pools!
+	// Calculate and align total internal local variables requirements to a 16-byte stack boundary
 	n->int_val = ((max_function_stack_bytes + 15) & ~15) + 16;
 
-	// Reset tracker back to 64 for the next function declaration
+	// Reset variable layout width bounds trackers back for the next function declaration
 	max_function_stack_bytes = 64;
 
 	return n;

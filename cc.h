@@ -77,6 +77,7 @@ typedef struct Symbol {
 	int offset;
 	int scope_level;
 	int is_variadic;
+	int is_extern;         // 1 if it's an external prototype, 0 otherwise
 	struct Symbol* next;
 } Symbol;
 
@@ -114,5 +115,7 @@ extern int is_codegen_phase;
 
 struct StructEnv* lookup_struct(const char* name);
 int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type);
+
+void emit_external_declarations(void);
 
 #endif

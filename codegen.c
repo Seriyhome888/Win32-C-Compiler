@@ -28,6 +28,17 @@ void add_buffered_string(int id, const char* str) {
 	literal_pool_count++;
 }
 
+void emit_external_declarations(void) {
+	Symbol* sym = sym_table;
+	printf("\n; --- DYNAMIC EXTERNAL SYMBOL REGISTRY --- \n");
+	while (sym) {
+		if (sym->is_extern) {
+			printf("extern %s:proc\n", sym->name);
+		}
+		sym = sym->next;
+	}
+}
+
 // Global invocation pipeline to flush out data cleanly at program teardown
 void flush_global_data_segment(void) {
 	if (literal_pool_count == 0) return;
