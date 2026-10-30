@@ -455,7 +455,6 @@ int test_typedef_pipeline() {
 	return 0;
 }
 
-// Add this near your other test functions
 void test_sizeof() {
 	int local_int;
 	char local_char;

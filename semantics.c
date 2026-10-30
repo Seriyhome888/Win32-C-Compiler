@@ -12,7 +12,7 @@ int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type) 
 	if (node->kind == AST_IDENT) {
 		Symbol* sym = lookup_symbol(node->name);
 		if (!sym) {
-			printf("Semantic Error: Variable '%s' is undefined.\n", node->name);
+			fprintf(stderr, "Semantic Error: Variable '%s' is undefined.\n", node->name);
 			exit(1);
 		}
 		*total_offset = sym->offset; // Start with the variable's stack offset
@@ -33,14 +33,14 @@ int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type) 
 		char struct_context[64];
 		if (node->op == TOKEN_ARROW) {
 			if (base_type.kind != TYPE_POINTER || !base_type.base_type || base_type.base_type->kind != TYPE_STRUCT) {
-				printf("Semantic Error: Arrow operator '->' used on a non-pointer type.\n");
+				fprintf(stderr, "Semantic Error: Arrow operator '->' used on a non-pointer type.\n");
 				exit(1);
 			}
 			strcpy(struct_context, base_type.base_type->struct_name);
 		}
 		else { // TOKEN_PERIOD '.'
 			if (base_type.kind != TYPE_STRUCT) {
-				printf("Semantic Error: Dot operator '.' used on a non-struct type.\n");
+				fprintf(stderr, "Semantic Error: Dot operator '.' used on a non-struct type.\n");
 				exit(1);
 			}
 			strcpy(struct_context, base_type.struct_name);
@@ -49,7 +49,7 @@ int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type) 
 		// 3. Look up the structure definition in the environment
 		struct StructEnv* env = lookup_struct(struct_context);
 		if (!env) {
-			printf("Semantic Error: Structure type '%s' is undefined.\n", struct_context);
+			fprintf(stderr, "Semantic Error: Structure type '%s' is undefined.\n", struct_context);
 			exit(1);
 		}
 
@@ -75,7 +75,7 @@ int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type) 
 		}
 
 		if (!member_found) {
-			printf("Semantic Error: Member '%s' not found in struct '%s'.\n", node->name, struct_context);
+			fprintf(stderr, "Semantic Error: Member '%s' not found in struct '%s'.\n", node->name, struct_context);
 			exit(1);
 		}
 		return 1;
