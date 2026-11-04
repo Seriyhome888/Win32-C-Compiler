@@ -200,3 +200,21 @@ Token next_token(void) {
 	}
 	return tok;
 }
+
+// --- NEW: PRECISE LEXER STREAM LOOKAHEAD ENGINE ---
+Token peek_next_token(void) {
+	// 1. Snapshot the complete active state of the lexer stream
+	long original_file_pos = ftell(src_file);
+	int original_ch = ch;
+
+	// 2. Extract the true next token using your existing lexer pipeline
+	Token peeked_token = next_token();
+
+	// 3. Perfectly restore the structural stream state back to the snapshot point
+	fseek(src_file, original_file_pos, SEEK_SET);
+	ch = original_ch;
+
+	// 4. Return the captured token frame safely to the parser
+	return peeked_token;
+}
+// --- END OF LOOKAHEAD ENGINE ---

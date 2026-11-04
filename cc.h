@@ -103,6 +103,7 @@ extern struct StructEnv* struct_table;
 // Global Compiler Prototypes
 void init_lexer(FILE* src);
 Token next_token(void);
+Token peek_next_token(void);
 ASTNode* parse_program(void);
 void emit_code(ASTNode* node);
 ASTNode* create_node(ASTNodeKind kind);

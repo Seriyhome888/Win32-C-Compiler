@@ -530,6 +530,23 @@ int test_compound_operators() {
 	return 0;
 }
 
+void cast_verification_test() {
+	float pi_approximation;
+	int truncated_integer;
+
+	pi_approximation = 3.99;
+
+	// Explicitly cast float to int (expected value: 3)
+	truncated_integer = (int)pi_approximation;
+
+	if (truncated_integer == 3) {
+		printf("Explicit Float -> Int Typecast PASSED\n");
+	}
+	else {
+		printf("Explicit Typecast FAILED\n");
+	}
+}
+
 int main()
 {
 	int result;
@@ -639,6 +656,8 @@ int main()
 	test_sizeof();
 
 	test_compound_operators();
+
+	cast_verification_test();
 
 	return 0;
 }

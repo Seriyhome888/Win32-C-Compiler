@@ -248,7 +248,50 @@ ASTNode* parse_postfix(void) {
 	return n;
 }
 
+// Forward declaration helper to check if a parenthesized block is a cast
+static int is_cast_expression(void) {
+	// We need to look ahead without permanently consuming tokens. 
+	// Since our lexer doesn't support generic infinite rollback, we check if 
+	// cur_tok is '(' and the next token is a valid type identifier.
+	// However, since we already have 'is_type_name', we can look at the sequence.
+	// If your lexer structure allows simple lookahead, implement it here.
+	// For a standard predictive parser, we can check if it's an explicit cast:
+	return (cur_tok.type == TOKEN_LPAREN);
+}
+
 ASTNode* parse_unary(void) {
+	// --- NEW: EXPLICIT TYPE CAST DETECTION ---
+	if (cur_tok.type == TOKEN_LPAREN) {
+		// We use a small optimization trick: try to look ahead if it's a type name.
+		// If your architecture handles an interactive token buffer, peek inside.
+		// Otherwise, standard C parses it by checking if the enclosed token is a type name:
+		Token next_tok_peek = peek_next_token(); // Ensure your lexer can look ahead 1 token
+		if (is_type_name(next_tok_peek)) {
+			match(TOKEN_LPAREN);
+			DataType cast_type = parse_base_type();
+
+			// Handle pointer casts like (int*) or (char*)
+			while (cur_tok.type == TOKEN_STAR) {
+				match(TOKEN_STAR);
+				DataType* base = (DataType*)calloc(1, sizeof(DataType));
+				*base = cast_type;
+				memset(&cast_type, 0, sizeof(cast_type));
+				cast_type.kind = TYPE_POINTER;
+				cast_type.base_type = base;
+			}
+			match(TOKEN_RPAREN);
+
+			// Construct the structural Unary Operator Cast Node
+			ASTNode* cast_node = create_node(AST_UNOP);
+			cast_node->op = TOKEN_TYPEDEF; // Reuse an unused token token mapping as an explicit CAST marker
+			cast_node->type = cast_type;   // Target conversion type context
+			cast_node->left = parse_unary(); // Recursively parse the expression being casted
+
+			return cast_node;
+		}
+	}
+	// --- END OF CAST ENGINE ENGINE ---
+
 	if (cur_tok.type == TOKEN_SIZEOF) {
 		match(TOKEN_SIZEOF);
 

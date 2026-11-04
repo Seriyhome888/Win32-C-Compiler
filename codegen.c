@@ -586,6 +586,51 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_UNOP: {
+		// --- NEW: EXPLICIT TYPE CAST GENERATION ENGINE ---
+		if (node->op == TOKEN_TYPEDEF) {
+			emit_code(node->left);
+			int rl = node->left->int_val; // Register containing evaluated value
+			rl = ensure_register_loaded(rl);
+
+			DataTypeKind from_type = node->left->type.kind;
+			DataTypeKind to_type = node->type.kind;
+
+			// Handle Pointer conversions (Pointers are treated like 32-bit Integers in x86 flat)
+			if (node->left->type.base_type != NULL || from_type == TYPE_POINTER) from_type = TYPE_INT;
+			if (node->type.base_type != NULL || to_type == TYPE_POINTER) to_type = TYPE_INT;
+
+			int r_dest = allocate_register();
+
+			if (from_type == TYPE_INT && to_type == TYPE_FLOAT) {
+				// 1. Convert Integer to Floating-Point (int -> float)
+				printf("    ; --- EXPLICIT CAST: INT -> FLOAT --- \n");
+				printf("    cvtsi2ss xmm0, %s\n", reg_names[rl]);
+				printf("    movd %s, xmm0\n", reg_names[r_dest]);
+			}
+			else if (from_type == TYPE_FLOAT && to_type == TYPE_INT) {
+				// 2. Convert Floating-Point to Integer (float -> int via truncation)
+				printf("    ; --- EXPLICIT CAST: FLOAT -> INT --- \n");
+				printf("    movd xmm0, %s\n", reg_names[rl]);
+				printf("    cvttss2si %s, xmm0\n", reg_names[r_dest]); // Truncates float toward zero
+			}
+			else if (to_type == TYPE_CHAR) {
+				// 3. Convert down to Char (truncates higher bits using 8-bit registers)
+				printf("    ; --- EXPLICIT CAST: -> CHAR --- \n");
+				printf("    mov %s, %s\n", reg_names[r_dest], reg_names[rl]);
+				printf("    and %s, 0FFh\n", reg_names[r_dest]); // Keep lower byte context clean
+			}
+			else {
+				// 4. Same size or structural bitwise move (e.g. int -> pointer, char -> int)
+				printf("    mov %s, %s\n", reg_names[r_dest], reg_names[rl]);
+			}
+
+			free_register(rl);
+			node->int_val = r_dest;
+			// node->type is already set to target context by the parser
+			break;
+		}
+		// --- END OF CAST ENGINE ---
+		
 		// FIXED: Catch our newly injected implicit-promotion conversion node
 		if (node->op == TOKEN_FLOAT_LIT) {
 			emit_code(node->left);
