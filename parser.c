@@ -261,19 +261,18 @@ static int is_cast_expression(void) {
 
 ASTNode* parse_unary(void) {
 	// --- NEW: EXPLICIT TYPE CAST DETECTION ---
+	// --- ENHANCED TYPE CAST DETECTION FOR VARIADIC SUPPORT ---
 	if (cur_tok.type == TOKEN_LPAREN) {
-		// We use a small optimization trick: try to look ahead if it's a type name.
-		// If your architecture handles an interactive token buffer, peek inside.
-		// Otherwise, standard C parses it by checking if the enclosed token is a type name:
-		Token next_tok_peek = peek_next_token(); // Ensure your lexer can look ahead 1 token
+		Token next_tok_peek = peek_next_token();
 		if (is_type_name(next_tok_peek)) {
 			match(TOKEN_LPAREN);
 			DataType cast_type = parse_base_type();
 
-			// Handle pointer casts like (int*) or (char*)
+			// Correctly parse arbitrary pointer stars: e.g., (char*) or (int**)
 			while (cur_tok.type == TOKEN_STAR) {
 				match(TOKEN_STAR);
 				DataType* base = (DataType*)calloc(1, sizeof(DataType));
+				if (!base) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 				*base = cast_type;
 				memset(&cast_type, 0, sizeof(cast_type));
 				cast_type.kind = TYPE_POINTER;
@@ -281,12 +280,15 @@ ASTNode* parse_unary(void) {
 			}
 			match(TOKEN_RPAREN);
 
-			// Construct the structural Unary Operator Cast Node
+			// Construct the cast node
 			ASTNode* cast_node = create_node(AST_UNOP);
-			cast_node->op = TOKEN_TYPEDEF; // Reuse an unused token token mapping as an explicit CAST marker
-			cast_node->type = cast_type;   // Target conversion type context
-			cast_node->left = parse_unary(); // Recursively parse the expression being casted
+			cast_node->op = TOKEN_TYPEDEF; // Cast marker
+			cast_node->type = cast_type;   // Target data type
 
+			// Crucial change: Parse recursively as a unary expression 
+			// so that *(type*)expr groups cleanly as *(AST_UNOP(type, expr))
+			cast_node->left = parse_unary();
+			cast_node->type = cast_type;
 			return cast_node;
 		}
 	}
@@ -508,16 +510,23 @@ ASTNode* parse_expr(void) {
 			else if (op_type == TOKEN_MUL_ASSIGN) math_node->op = TOKEN_STAR;
 			else if (op_type == TOKEN_DIV_ASSIGN) math_node->op = TOKEN_SLASH;
 
-			// Re-use left-hand side structure cleanly 
 			math_node->left = n;
 			math_node->right = right_expr;
 
-			// Propagate data types completely for floating-point validation layers
+			// --- FIXED POINTER-SAFE TYPE PROPAGATION ENGINE ---
 			if (math_node->left->type.kind == TYPE_FLOAT || math_node->right->type.kind == TYPE_FLOAT) {
 				extern ASTNode* ensure_float_node(ASTNode * node);
 				math_node->left = ensure_float_node(math_node->left);
 				math_node->right = ensure_float_node(math_node->right);
 				math_node->type.kind = TYPE_FLOAT;
+			}
+			else if (math_node->left->type.kind == TYPE_POINTER || math_node->left->type.base_type != NULL) {
+				// Inherit full pointer metadata cleanly from the target variable (e.g. ap)
+				math_node->type = math_node->left->type;
+			}
+			else if (math_node->right->type.kind == TYPE_POINTER || math_node->right->type.base_type != NULL) {
+				// Fallback variant inheritance
+				math_node->type = math_node->right->type;
 			}
 			else {
 				math_node->type.kind = TYPE_INT;

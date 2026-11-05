@@ -1,4 +1,5 @@
 #include "stdio.h"
+#include "stdarg.h"
 
 #define INITIAL_VALUE 42
 #define STEP_INCREMENT 5
@@ -547,6 +548,28 @@ void cast_verification_test() {
 	}
 }
 
+// 1. Fully dynamic variadic loop processing
+int test_variadic_sum(int count, ...) {
+	va_list ap;
+	int total;
+	int i;
+	int current_val;
+
+	total = 0;
+	i = 0;
+	va_start(ap, count);
+
+	// This loop repeatedly evaluates *(int*)((ap += 4) - 4) at runtime
+	while (i < count) {
+		current_val = va_arg(ap, int);
+		total = total + current_val;
+		i = i + 1;
+	}
+
+	va_end(ap);
+	return total;
+}
+
 int main()
 {
 	int result;
@@ -658,6 +681,29 @@ int main()
 	test_compound_operators();
 
 	cast_verification_test();
+
+	// Update the verification assertions
+	int var_res1;
+	int var_res2;
+
+	// Test 1: Dynamic compilation check passing 3 values
+	var_res1 = test_variadic_sum(3, 10, 20, 30);
+	// Test 2: Dynamic compilation check passing 6 values
+	var_res2 = test_variadic_sum(6, 1, 2, 3, 4, 5, 6);
+
+	if (var_res1 == 60) {
+		printf("Dynamic Variadic Test 1 (3 args) PASSED: %d\n", var_res1);
+	}
+	else {
+		printf("Dynamic Variadic Test 1 (3 args) FAILED\n");
+	}
+
+	if (var_res2 == 21) {
+		printf("Dynamic Variadic Test 2 (6 args) PASSED: %d\n", var_res2);
+	}
+	else {
+		printf("Dynamic Variadic Test 2 (6 args) FAILED\n");
+	}
 
 	return 0;
 }

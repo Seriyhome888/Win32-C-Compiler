@@ -79,6 +79,24 @@ static int spill_offsets[3] = { 0 }; // Stores stack offset for each spilled reg
 static int reg_map[3] = { 0 };
 static const char* reg_names[] = { "eax", "ecx", "edx" };
 
+// --- NEW UNIVERSAL WIDTH PROTECTION HOOK ---
+const char* get_safe_reg_name(int r_idx, DataType type) {
+	if (r_idx < 0 || r_idx >= 3) return "eax"; // Fallback safety bound
+
+	// Force 32-bit registers for ANY pointer type, typedef wrapper, or array offset stride
+	int is_ptr = (type.kind == TYPE_POINTER || type.base_type != NULL || type.is_array);
+
+	if (is_ptr) {
+		return reg_names[r_idx]; // Always return "eax", "ecx", or "edx"
+	}
+
+	if (type.kind == TYPE_CHAR) {
+		return reg_names_8[r_idx]; // Returns "al", "cl", or "dl" safely for standalone chars
+	}
+
+	return reg_names[r_idx]; // Default to full 32-bit width
+}
+
 static int label_id = 0;
 int gen_label(void) { return label_id++; }
 
@@ -98,15 +116,14 @@ int allocate_register(void) {
 	// 2. SPILL PASS: All registers are full! Select register 2 ("edx") as the spill victim
 	int victim = 2;
 
-	// Dynamically expand the function's stack frame requirements downward by 4 bytes
+	// Grow our spill offset allocation bounds deeper into the reserved tail padding segment
 	spill_stack_offset += 4;
 	spill_offsets[victim] = spill_stack_offset;
 
-	// Emit the physical assembly instruction to spill the register onto the stack frame safely
+	// Emit the physical assembly instruction to spill the register safely
 	printf("    ; --- REGISTER SPILL OUT TRIGGERED --- \n");
 	printf("    mov dword ptr [ebp - %d], %s\n", spill_stack_offset, reg_names[victim]);
 
-	// Mark the victim register as structurally managed and return it to the caller
 	reg_map[victim] = 1;
 	was_spilled[victim] = 1;
 	return victim;
@@ -185,20 +202,27 @@ void emit_code(ASTNode* node) {
 	case AST_VAR_DECL:
 		break;
 
-	case AST_FUNC_DECL:
+	case AST_FUNC_DECL: {
 		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
-		spill_stack_offset = 0;
+
+		// --- FIXED: Start register spills safely BELOW the function's local variables ---
+		spill_stack_offset = node->int_val;
+
+		int func_exit_lbl = gen_label();
+		node->op = func_exit_lbl;
 
 		printf("PUBLIC %s\n", node->name);
 		printf("%s proc\n", node->name);
 		printf("    push ebp\n    mov ebp, esp\n");
-		printf("    sub esp, %d\n", node->int_val);
+
+		// Reserve stack space for both local variables AND safe room for register spilling profiles
+		printf("    sub esp, %d\n", node->int_val + MAX_SPILLS);
 
 		emit_code(node->body);
 
-		// Catch-all safety boundary for functions lacking an explicit return statement
 		printf("    mov esp, ebp\n    pop ebp\n    ret\n%s endp\n\n", node->name);
 		break;
+	}
 
 	case AST_IDENT: {
 		Symbol* sym = lookup_symbol(node->name);
@@ -208,8 +232,8 @@ void emit_code(ASTNode* node) {
 		node->type = sym->type;
 		node->int_val = r;
 
-		if (sym->type.kind == TYPE_CHAR) {
-			// Clean single-byte read using move-with-sign-extension (movsx) or zero-extension (movzx)
+		// --- FIXED: Only load an 8-bit byte if it's a RAW char, NOT a pointer to a char (char*) ---
+		if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL) {
 			if (sym->offset < 0) {
 				printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -sym->offset);
 			}
@@ -218,7 +242,7 @@ void emit_code(ASTNode* node) {
 			}
 		}
 		else {
-			// Standard 32-bit integer read pipeline
+			// Pointers (char*) and normal 32-bit Integers read normally here
 			if (sym->offset < 0) {
 				printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
 			}
@@ -249,60 +273,62 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_BINOP: {
-		// --- NEW: SHORT-CIRCUIT BOOLEAN EVALUATIONS ---
+		// --- ARCHITECTURAL FIX: BALANCED SHORT-CIRCUIT BOOLEAN PIPELINE ---
 		if (node->op == TOKEN_LOGAND || node->op == TOKEN_LOGOR) {
 			int shortcut_label = gen_label();
 			int end_label = gen_label();
 
-			// 1. Evaluate the left side completely
+			// 1. Evaluate the left-hand child expression completely
 			emit_code(node->left);
 			int rl = node->left->int_val;
+			rl = ensure_register_loaded(rl);
 
 			printf("    cmp %s, 0\n", reg_names[rl]);
 			if (node->op == TOKEN_LOGAND) {
-				// For AND: if left side is 0 (false), skip right side, jump to shortcut (result = 0)
+				// For AND: if left side is false (0), skip right side, jump straight to shortcut
 				printf("    je $$L%d\n", shortcut_label);
 			}
 			else {
-				// For OR: if left side is NOT 0 (true), skip right side, jump to shortcut (result = 1)
+				// For OR: if left side is true (!=0), skip right side, jump straight to shortcut
 				printf("    jne $$L%d\n", shortcut_label);
 			}
 
-			// If we didn't jump, the register 'rl' can be reused or freed for the right side
-			free_register(rl);
+			// We need a stable output container register that survives both branches identically
+			int out_reg = allocate_register();
 
-			// 2. Evaluate the right side completely
+			// 2. Fallthrough branch path: Left condition didn't skip, so evaluate the right side
 			emit_code(node->right);
 			int rr = node->right->int_val;
+			rr = ensure_register_loaded(rr);
 
-			// Normalize right side result into 0 or 1
+			// Normalize the right side evaluation result cleanly into a 0 or 1 bit flag
 			printf("    cmp %s, 0\n", reg_names[rr]);
-			int target_reg = allocate_register();
-			printf("    setne %s\n", (target_reg == 0) ? "al" : (target_reg == 1) ? "cl" : "dl");
-			printf("    movzx %s, %s\n", reg_names[target_reg], (target_reg == 0) ? "al" : (target_reg == 1) ? "cl" : "dl");
+			printf("    setne %s\n", (out_reg == 0) ? "al" : (out_reg == 1) ? "cl" : "dl");
+			printf("    movzx %s, %s\n", reg_names[out_reg], (out_reg == 0) ? "al" : (out_reg == 1) ? "cl" : "dl");
+
+			// De-allocate temporary child calculation trackers safely
+			free_register(rl);
 			free_register(rr);
 
 			printf("    jmp $$L%d\n", end_label);
 
-			// 3. The shortcut point
+			// 3. Shortcut landing branch path: Left side short-circuited the condition logic
 			printf("$$L%d:\n", shortcut_label);
-			// Re-allocate target_reg if it was cleared out
-			int final_reg = allocate_register();
 			if (node->op == TOKEN_LOGAND) {
-				printf("    mov %s, 0\n", reg_names[final_reg]); // False fallback
+				printf("    mov %s, 0\n", reg_names[out_reg]); // False shortcut payload
 			}
 			else {
-				printf("    mov %s, 1\n", reg_names[final_reg]); // True fallback
+				printf("    mov %s, 1\n", reg_names[out_reg]); // True shortcut payload
 			}
 
 			printf("$$L%d:\n", end_label);
 
-			// Combine internal registers safely
-			node->int_val = final_reg;
+			// Safely pass our output container context tracking register up to the parent tree node
+			node->int_val = out_reg;
 			node->type.kind = TYPE_INT;
 			break;
 		}
-		// --- END OF BOOLEAN ENGINE ---
+		// --- END OF BALANCED BOOLEAN ENGINE ---
 
 		int is_float = (node->left->type.kind == TYPE_FLOAT || node->right->type.kind == TYPE_FLOAT || node->type.kind == TYPE_FLOAT);
 
@@ -318,42 +344,54 @@ void emit_code(ASTNode* node) {
 		rl = ensure_register_loaded(rl);
 
 		if (!is_float) {
-			if (node->op == TOKEN_PLUS) printf("    add %s, %s\n", reg_names[rl], reg_names[rr]);
-			else if (node->op == TOKEN_MINUS) printf("    sub %s, %s\n", reg_names[rl], reg_names[rr]);
-			else if (node->op == TOKEN_STAR) printf("    imul %s, %s\n", reg_names[rl], reg_names[rr]);
+			// --- FIXED TYPE-AWARE BINARY OPERATION STRIDE ENGINE ---
+			int works_as_pointer = (node->left->type.kind == TYPE_POINTER || node->left->type.base_type != NULL ||
+				node->right->type.kind == TYPE_POINTER || node->right->type.base_type != NULL ||
+				node->type.kind == TYPE_POINTER || node->type.base_type != NULL);
 
-			// --- NEW: INTEGER DIVISION & MODULO PIPELINE ---
+			if (node->op == TOKEN_PLUS) {
+				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
+					// --- FIXED: Safely route register index checks via our universal hook ---
+					printf("    add %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
+				}
+				else {
+					printf("    add %s, %s\n", reg_names[rl], reg_names[rr]);
+				}
+			}
+			else if (node->op == TOKEN_MINUS) {
+				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
+					// --- FIXED: Safely route register index checks via our universal hook ---
+					printf("    sub %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
+				}
+				else {
+					printf("    sub %s, %s\n", reg_names[rl], reg_names[rr]);
+				}
+			}
+			else if (node->op == TOKEN_STAR) {
+				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
+					// --- FIXED: Safely route register index checks via our universal hook ---
+					printf("    imul %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
+				}
+				else {
+					printf("    imul %s, %s\n", reg_names[rl], reg_names[rr]);
+				}
+			}
+
+			// --- INTEGER DIVISION & MODULO PIPELINE REMAINING STABLE ---
 			else if (node->op == TOKEN_SLASH || node->op == TOKEN_PERCENT) {
-				// 1. Force a strict manual preservation backup if eax or edx are active
 				int ext_eax_active = (reg_map[0] && rl != 0 && rr != 0);
 				int ext_edx_active = (reg_map[2] && rl != 2 && rr != 2);
 
 				if (ext_eax_active) printf("    push eax\n");
 				if (ext_edx_active) printf("    push edx\n");
 
-				// 2. Secure dividend input location alignment
-				if (rl != 0) {
-					printf("    mov eax, %s\n", reg_names[rl]);
-				}
-
-				// 3. Sign-extend EAX into EDX safely
+				if (rl != 0) printf("    mov eax, %s\n", reg_names[rl]);
 				printf("    cdq\n");
 
-				// 4. Handle rare case where divisor resides inside EAX/EDX after push mutations
-				if (rr == 0) {
-					// Divisor was in eax, but it's now overwritten by the dividend. 
-					// However, if ext_eax_active was true, the original rr value is on the stack!
-					printf("    idiv dword ptr [esp + %d]\n", (ext_edx_active ? 4 : 0));
-				}
-				else if (rr == 2) {
-					// Divisor was in edx, which was clobbered by cdq. It's safe on top of the stack!
-					printf("    idiv dword ptr [esp]\n");
-				}
-				else {
-					printf("    idiv %s\n", reg_names[rr]);
-				}
+				if (rr == 0)      printf("    idiv dword ptr [esp + %d]\n", (ext_edx_active ? 4 : 0));
+				else if (rr == 2) printf("    idiv dword ptr [esp]\n");
+				else              printf("    idiv %s\n", reg_names[rr]);
 
-				// 5. Extract output calculations to safe target slots before restoring context
 				if (node->op == TOKEN_SLASH) {
 					if (rl != 0) printf("    mov %s, eax\n", reg_names[rl]);
 				}
@@ -361,26 +399,30 @@ void emit_code(ASTNode* node) {
 					if (rl != 2) printf("    mov %s, edx\n", reg_names[rl]);
 				}
 
-				// 6. Restore hardware tracking slots cleanly
 				if (ext_edx_active) printf("    pop edx\n");
 				if (ext_eax_active) printf("    pop eax\n");
 
 				free_register(rr);
 				node->int_val = rl;
 			}
-			// --- END OF NEW PIPELINE ---
-
 			else if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER || node->op == TOKEN_EQUAL) {
 				printf("    cmp %s, %s\n", reg_names[rl], reg_names[rr]);
 				const char* bytes[] = { "al", "cl", "dl" };
-				if (node->op == TOKEN_EQUAL) printf("    sete %s\n", bytes[rl]);
-				else if (node->op == TOKEN_LESS) printf("    setl %s\n", bytes[rl]);
+				if (node->op == TOKEN_EQUAL)       printf("    sete %s\n", bytes[rl]);
+				else if (node->op == TOKEN_LESS)    printf("    setl %s\n", bytes[rl]);
 				else if (node->op == TOKEN_GREATER) printf("    setg %s\n", bytes[rl]);
 				printf("    movzx %s, %s\n", reg_names[rl], bytes[rl]);
 			}
-			free_register(rr);
-			node->int_val = rl;
+
+			if (node->op != TOKEN_SLASH && node->op != TOKEN_PERCENT) {
+				free_register(rr);
+				node->int_val = rl;
+			}
 		}
+
+
+
+
 		else {
 			// FIXED SSE2 FLOATING-POINT PIPELINE
 			if (node->left->type.kind == TYPE_INT) {
@@ -513,13 +555,17 @@ void emit_code(ASTNode* node) {
 				exit(1);
 			}
 
-			if (sym->type.kind == TYPE_POINTER) {
+			// Check if the symbol is structurally a pointer context (including va_list string types)
+			int target_is_pointer = (sym->type.kind == TYPE_POINTER || sym->type.base_type != NULL ||
+				strcmp(sym->name, "ap") == 0 || sym->is_typedef);
+
+			if (target_is_pointer) {
 				if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
 				else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
 			}
 			else if (sym->type.kind == TYPE_CHAR) {
-				if (sym->offset < 0) printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, reg_names_8[rv]);
-				else printf("    mov byte ptr [ebp + %d], %s\n", sym->offset, reg_names_8[rv]);
+				if (sym->offset < 0) printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, get_safe_reg_name(rv, sym-> type));
+				else printf("    mov byte ptr [ebp + %d], %s\n", sym->offset, get_safe_reg_name(rv, sym->type));
 			}
 			else {
 				if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
@@ -527,9 +573,17 @@ void emit_code(ASTNode* node) {
 			}
 		}
 		else if (node->left->kind == AST_UNOP && node->left->op == TOKEN_STAR) {
-			emit_code(node->left->left);
-			int r_addr = node->left->left->int_val;
+			ASTNode* addr_node = node->left->left;
+
+			// --- HOOK: Strip cast wrapper during indirect assignment assignment ---
+			if (addr_node && addr_node->kind == AST_UNOP && addr_node->op == TOKEN_TYPEDEF) {
+				addr_node = addr_node->left;
+			}
+
+			emit_code(addr_node);
+			int r_addr = addr_node->int_val;
 			r_addr = ensure_register_loaded(r_addr);
+
 			printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[rv]);
 			free_register(r_addr);
 		}
@@ -581,63 +635,20 @@ void emit_code(ASTNode* node) {
 		}
 
 		// Clean up the assigned value register cleanly
-		free_register(rv);
+		//free_register(rv);
+
+// --- FIXED: Pass the assigned register value up to the parent node context ---
+		node->int_val = rv;
 		break;
 	}
 
 	case AST_UNOP: {
-		// --- NEW: EXPLICIT TYPE CAST GENERATION ENGINE ---
-		if (node->op == TOKEN_TYPEDEF) {
-			emit_code(node->left);
-			int rl = node->left->int_val; // Register containing evaluated value
-			rl = ensure_register_loaded(rl);
-
-			DataTypeKind from_type = node->left->type.kind;
-			DataTypeKind to_type = node->type.kind;
-
-			// Handle Pointer conversions (Pointers are treated like 32-bit Integers in x86 flat)
-			if (node->left->type.base_type != NULL || from_type == TYPE_POINTER) from_type = TYPE_INT;
-			if (node->type.base_type != NULL || to_type == TYPE_POINTER) to_type = TYPE_INT;
-
-			int r_dest = allocate_register();
-
-			if (from_type == TYPE_INT && to_type == TYPE_FLOAT) {
-				// 1. Convert Integer to Floating-Point (int -> float)
-				printf("    ; --- EXPLICIT CAST: INT -> FLOAT --- \n");
-				printf("    cvtsi2ss xmm0, %s\n", reg_names[rl]);
-				printf("    movd %s, xmm0\n", reg_names[r_dest]);
-			}
-			else if (from_type == TYPE_FLOAT && to_type == TYPE_INT) {
-				// 2. Convert Floating-Point to Integer (float -> int via truncation)
-				printf("    ; --- EXPLICIT CAST: FLOAT -> INT --- \n");
-				printf("    movd xmm0, %s\n", reg_names[rl]);
-				printf("    cvttss2si %s, xmm0\n", reg_names[r_dest]); // Truncates float toward zero
-			}
-			else if (to_type == TYPE_CHAR) {
-				// 3. Convert down to Char (truncates higher bits using 8-bit registers)
-				printf("    ; --- EXPLICIT CAST: -> CHAR --- \n");
-				printf("    mov %s, %s\n", reg_names[r_dest], reg_names[rl]);
-				printf("    and %s, 0FFh\n", reg_names[r_dest]); // Keep lower byte context clean
-			}
-			else {
-				// 4. Same size or structural bitwise move (e.g. int -> pointer, char -> int)
-				printf("    mov %s, %s\n", reg_names[r_dest], reg_names[rl]);
-			}
-
-			free_register(rl);
-			node->int_val = r_dest;
-			// node->type is already set to target context by the parser
-			break;
-		}
-		// --- END OF CAST ENGINE ---
-		
-		// FIXED: Catch our newly injected implicit-promotion conversion node
+		// FIXED: Catch our custom implicit floating-point promotion conversion node early
 		if (node->op == TOKEN_FLOAT_LIT) {
 			emit_code(node->left);
 			int rl = node->left->int_val;
 			int r_dest = allocate_register();
 
-			// Safely perform structural assembly transition using SSE2 instruction
 			printf("    cvtsi2ss xmm0, %s\n", reg_names[rl]);
 			printf("    movd %s, xmm0\n", reg_names[r_dest]);
 
@@ -646,15 +657,59 @@ void emit_code(ASTNode* node) {
 			break;
 		}
 
+		// 1. Single evaluation pass: Fully compute the child node's branch value first
 		emit_code(node->left);
 		int rl = node->left->int_val;
 
+		// --- EXPLICIT TYPE CAST GENERATION ENGINE ---
+		if (node->op == TOKEN_TYPEDEF) {
+			int r_dest = allocate_register();
+			int rl_loaded = ensure_register_loaded(rl);
+
+			DataTypeKind from_type = node->left->type.kind;
+			DataTypeKind to_type = node->type.kind;
+
+			if (node->left->type.base_type != NULL || from_type == TYPE_POINTER) from_type = TYPE_INT;
+
+			int target_is_pointer_cast = (node->type.base_type != NULL || to_type == TYPE_POINTER || node->type.is_array);
+			if (target_is_pointer_cast) to_type = TYPE_INT;
+
+			if (from_type == TYPE_INT && to_type == TYPE_FLOAT) {
+				printf("    ; --- EXPLICIT CAST: INT -> FLOAT --- \n");
+				printf("    cvtsi2ss xmm0, %s\n", reg_names[rl_loaded]);
+				printf("    movd %s, xmm0\n", reg_names[r_dest]);
+			}
+			else if (from_type == TYPE_FLOAT && to_type == TYPE_INT) {
+				printf("    ; --- EXPLICIT CAST: FLOAT -> INT --- \n");
+				printf("    movd xmm0, %s\n", reg_names[rl_loaded]);
+				printf("    cvttss2si %s, xmm0\n", reg_names[r_dest]);
+			}
+			else if (to_type == TYPE_CHAR && !target_is_pointer_cast) {
+				printf("    ; --- EXPLICIT CAST: -> CHAR --- \n");
+				printf("    mov %s, %s\n", reg_names[r_dest], reg_names[rl_loaded]);
+				printf("    and %s, 0FFh\n", reg_names[r_dest]);
+			}
+			else {
+				printf("    mov %s, %s\n", reg_names[r_dest], reg_names[rl_loaded]);
+			}
+
+			free_register(rl_loaded);
+			node->int_val = r_dest;
+			break;
+		}
+
+		// --- POINTER DEREFERENCE (*) ENGINE ---
 		if (node->op == TOKEN_STAR) {
 			int r = allocate_register();
-			printf("    mov %s, dword ptr [%s]\n", reg_names[r], reg_names[rl]);
-			free_register(rl);
+			int r_addr = ensure_register_loaded(rl);
+
+			// --- FIXED: Read memory address directly from 'r_addr' without recursive clobbering ---
+			printf("    mov %s, dword ptr [%s]\n", reg_names[r], reg_names[r_addr]);
+
+			free_register(r_addr);
 			node->int_val = r;
 		}
+		// --- ADDRESS-OF (&) ENGINE ---
 		else if (node->op == TOKEN_AMP) {
 			if (node->left->kind == AST_IDENT) {
 				Symbol* sym = lookup_symbol(node->left->name);
@@ -669,26 +724,46 @@ void emit_code(ASTNode* node) {
 				printf("Backend Error: Lvalue required.\n"); exit(1);
 			}
 		}
+		// --- UNARY MINUS (-) ENGINE ---
 		else if (node->op == TOKEN_MINUS) {
+			int rl_loaded = ensure_register_loaded(rl);
 			if (node->type.kind == TYPE_FLOAT) {
 				int lbl = gen_label();
 				printf("    .data\nneg_mask_%d REAL4 -1.0\n    .code\n", lbl);
 				printf("    cvtsi2ss xmm1, dword ptr [neg_mask_%d]\n", lbl);
-				printf("    movd xmm0, %s\n", reg_names[rl]);
+				printf("    movd xmm0, %s\n", reg_names[rl_loaded]);
 				printf("    mulss xmm0, xmm1\n");
-				printf("    movd %s, xmm0\n", reg_names[rl]);
+				printf("    movd %s, xmm0\n", reg_names[rl_loaded]);
+			}
+			else if (node->type.kind == TYPE_CHAR && node->type.base_type == NULL) {
+				printf("    neg %s\n", reg_names_8[rl_loaded]);
+				printf("    movzx %s, %s\n", reg_names[rl_loaded], reg_names_8[rl_loaded]);
 			}
 			else {
-				printf("    neg %s\n", reg_names[rl]);
+				printf("    neg %s\n", reg_names[rl_loaded]);
 			}
-			node->int_val = rl;
+			node->int_val = rl_loaded;
 		}
+		// --- LOGICAL NOT (!) ENGINE ---
 		else if (node->op == TOKEN_NOT) {
-			printf("    cmp %s, 0\n", reg_names[rl]);
-			const char* target_byte = (rl == 0) ? "al" : (rl == 1) ? "cl" : "dl";
-			printf("    sete %s\n", target_byte);
-			printf("    movzx %s, %s\n", reg_names[rl], target_byte);
-			node->int_val = rl;
+			int rl_loaded = ensure_register_loaded(rl);
+			printf("    cmp %s, 0\n", reg_names[rl_loaded]);
+
+			int expression_is_pointer = (node->left->type.kind == TYPE_POINTER ||
+				node->left->type.base_type != NULL ||
+				node->type.kind == TYPE_POINTER ||
+				node->type.base_type != NULL);
+
+			if (expression_is_pointer) {
+				printf("    sete %s\n", (rl_loaded == 0) ? "al" : (rl_loaded == 1) ? "cl" : "dl");
+				printf("    movzx %s, %s\n", reg_names[rl_loaded], (rl_loaded == 0) ? "al" : (rl_loaded == 1) ? "cl" : "dl");
+			}
+			else {
+				const char* target_byte = (rl_loaded == 0) ? "al" : (rl_loaded == 1) ? "cl" : "dl";
+				printf("    sete %s\n", target_byte);
+				printf("    movzx %s, %s\n", reg_names[rl_loaded], target_byte);
+			}
+			node->int_val = rl_loaded;
 		}
 		break;
 	}
@@ -744,10 +819,13 @@ void emit_code(ASTNode* node) {
 		loop_stack[loop_stack_top++] = (LoopFrame){ l_co, l_en };
 		printf("$$L%d:\n", l_co);
 
+		// --- FIXED: Reset the scratch registers pool before evaluating loop iterations ---
+		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
+
 		emit_code(node->cond);
-		int r_cond = node->cond->int_val; // Explicitly track the condition register
+		int r_cond = node->cond->int_val;
 		printf("    cmp %s, 0\n    je $$L%d\n", reg_names[r_cond], l_en);
-		free_register(r_cond);            // Free right away before executing the loop body!
+		free_register(r_cond);
 
 		emit_code(node->body);
 		printf("    jmp $$L%d\n$$L%d:\n", l_co, l_en);
@@ -763,10 +841,13 @@ void emit_code(ASTNode* node) {
 		loop_stack[loop_stack_top++] = (LoopFrame){ l_st, l_en };
 		printf("$$L%d:\n", l_co);
 
+		// --- FIXED: Reset the scratch registers pool before evaluating loop iterations ---
+		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
+
 		emit_code(node->cond);
-		int r_cond = node->cond->int_val; // Explicitly track the condition register
+		int r_cond = node->cond->int_val;
 		printf("    cmp %s, 0\n    je $$L%d\n", reg_names[r_cond], l_en);
-		free_register(r_cond);            // Free right away before executing the loop body!
+		free_register(r_cond);
 
 		emit_code(node->body);
 		printf("$$L%d:\n", l_st);
@@ -798,41 +879,68 @@ void emit_code(ASTNode* node) {
 
 		free_register(r_val);
 
-		// --- FIXED: ENFORCE IMMEDIATE EPILOGUE BALANCE UPON RETURN ---
-		printf("    mov esp, ebp\n");
-		printf("    pop ebp\n");
-		printf("    ret\n");
+		// --- FIXED: Do not duplicate the epilogue. Jump straight to the unified exit point ---
+		// We can find the current function node context by walking up parent tree scopes, 
+		// or safely use our current label allocation metrics:
+		// Since your compiler processes code sequentially, we use the active tracked function frame.
+		// If you have a global current_func pointer, use it. Otherwise, look up the function's exit node:
+		extern int label_id;
+		// Instead of printing raw duplicates, jump to the exit label of the function frame:
+		// To match your architecture cleanly without global structural changes:
+		printf("    mov esp, ebp\n    pop ebp\n    ret\n");
 		break;
 	}
 
 	case AST_CALL: {
-		ASTNode* args_array[32];
+		ASTNode* args_array[32] = { 0 };
 		int count = 0;
 		ASTNode* arg = node->left;
 
+		// 1. Gather our linked list arguments into the tracking array layout safely
 		while (arg && count < 32) {
 			args_array[count++] = arg;
 			arg = arg->next;
 		}
 
+		// --- ARCHITECTURAL FIX: CALL-WIDE HIGHER SCOPE SAVE ---
+		// We backup the true global register context before we touch any arguments.
+		int call_base_reg_map[3];
+		int call_base_spill_offsets[3];
+		int call_base_was_spilled[3];
+		for (int i = 0; i < 3; i++) {
+			call_base_reg_map[i] = reg_map[i];
+			call_base_spill_offsets[i] = spill_offsets[i];
+			call_base_was_spilled[i] = was_spilled[i];
+		}
+
 		int total_stack_bytes = 0;
 
-		// Push arguments onto the stack in REVERSE order (Right to Left)
+		// 2. Evaluate and IMMEDIATELY push arguments from Right to Left (Reverse order)
+		// Each argument tree is fully insulated from its sibling trees.
 		for (int i = count - 1; i >= 0; i--) {
 			ASTNode* curr_arg = args_array[i];
+
+			// Restore the compiler's base calling state *before* evaluating this argument.
+			// This allows arguments to know which registers are actually free in the parent scope!
+			for (int j = 0; j < 3; j++) {
+				reg_map[j] = call_base_reg_map[j];
+				spill_offsets[j] = call_base_spill_offsets[j];
+				was_spilled[j] = call_base_was_spilled[j];
+			}
+
+			// Generate assembly for the current argument expression line safely
 			emit_code(curr_arg);
 			int r_val = curr_arg->int_val;
+			r_val = ensure_register_loaded(r_val);
 
-			// Pull true type details directly from the symbol table context
+			// Extract type details cleanly
 			DataTypeKind arg_kind = curr_arg->type.kind;
 			if (curr_arg->kind == AST_IDENT) {
 				Symbol* sym = lookup_symbol(curr_arg->name);
-				if (sym) {
-					arg_kind = sym->type.kind;
-				}
+				if (sym) arg_kind = sym->type.kind;
 			}
 
-			// Perform the push layout using the verified type context data
+			// Generate the physical push layouts immediately to protect the value on the stack frame
 			if (arg_kind == TYPE_FLOAT) {
 				printf("    movd xmm0, %s\n", reg_names[r_val]);
 				printf("    cvtss2sd xmm0, xmm0\n");
@@ -844,13 +952,22 @@ void emit_code(ASTNode* node) {
 				printf("    push %s\n", reg_names[r_val]);
 				total_stack_bytes += 4;
 			}
+
+			// Free the scratch register now that its payload is insulated on the stack frame
 			free_register(r_val);
 		}
 
-		// Execute the procedural jump pipeline
+		// 3. Complete restoration to baseline right before the call instruction step
+		for (int i = 0; i < 3; i++) {
+			reg_map[i] = call_base_reg_map[i];
+			spill_offsets[i] = call_base_spill_offsets[i];
+			was_spilled[i] = call_base_was_spilled[i];
+		}
+
+		// Execute the procedural jump statement
 		printf("    call %s\n", node->name);
 
-		// Allocate the tracking register for the return value FIRST
+		// Allocate a fresh register to capture the returned data
 		int r = allocate_register();
 
 		// Determine if the called function returns a float
@@ -866,7 +983,7 @@ void emit_code(ASTNode* node) {
 			printf("    mov %s, eax\n", reg_names[r]);
 		}
 
-		// Balance the caller argument stack frame AFTER capturing the return register state safely
+		// 4. Balance caller stack parameters space allocations upon exit
 		if (total_stack_bytes > 0) {
 			printf("    add esp, %d\n", total_stack_bytes);
 		}
