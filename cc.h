@@ -24,7 +24,7 @@ typedef enum {
 	TOKEN_SWITCH, TOKEN_CASE, TOKEN_DEFAULT, TOKEN_COLON, TOKEN_PERCENT,
 	TOKEN_LOGAND, // && 
 	TOKEN_LOGOR,  // || 
-	TOKEN_NOT, TOKEN_ELLIPSIS, TOKEN_TYPEDEF, TOKEN_SIZEOF
+	TOKEN_NOT, TOKEN_ELLIPSIS, TOKEN_TYPEDEF, TOKEN_SIZEOF, TOKEN_STATIC
 } TokenType;
 
 typedef struct {
@@ -73,8 +73,14 @@ typedef struct ASTNode {
 
 typedef struct Symbol {
 	char name[64];
+	char asm_label[64];    // MASM label for globals/statics (e.g., "g_var" or "static_foo_x_0")
 	DataType type;
-	int is_local;
+	int is_local;		   // 1 = stack variable ([ebp - offset]), 0 = global/static/func
+	int is_static;         // 1 = static storage/internal linkage
+	int is_global_var;     // 1 = global or block-static variable stored in .data
+	int has_init;          // 1 if initialized at declaration
+	int init_int;          // Constant integer/char initializer
+	double init_float;     // Constant float initializer
 	int offset;
 	int scope_level;
 	int is_variadic;
@@ -120,5 +126,7 @@ struct StructEnv* lookup_struct(const char* name);
 int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type);
 
 void emit_external_declarations(void);
+
+void emit_global_variables(void);
 
 #endif

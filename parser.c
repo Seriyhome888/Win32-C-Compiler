@@ -1,5 +1,8 @@
 #include "cc.h"
 
+static char current_func_name[64] = "global";
+static int static_var_counter = 0;
+
 int max_function_stack_bytes = 64; // Fallback minimum size boundary
 
 Token cur_tok;
@@ -661,7 +664,13 @@ ASTNode* parse_stmt(void) {
 	}
 
 	// 2. REWRITE VARIABLE DECLARATION DETECTION BY USING OUR TYPE NAME HELPER
-	if (is_type_name(cur_tok)) {
+	if (cur_tok.type == TOKEN_STATIC || is_type_name(cur_tok)) {
+		int is_stat = 0;
+		if (cur_tok.type == TOKEN_STATIC) {
+			is_stat = 1;
+			match(TOKEN_STATIC);
+		}
+
 		DataType vt = parse_base_type();
 
 		// Check for pointer asterisks (e.g., Person* ptr; or int_ptr* ptr_ptr;)
@@ -691,6 +700,39 @@ ASTNode* parse_stmt(void) {
 			match(TOKEN_INT_LIT);
 			match(TOKEN_RBRACKET);
 		}
+
+		// Optional constant initializer (required for static, convenient for locals)
+		int has_init = 0;
+		int init_int = 0;
+		double init_float = 0.0;
+		ASTNode* dyn_init_expr = NULL;
+
+		if (cur_tok.type == TOKEN_ASSIGN) {
+			match(TOKEN_ASSIGN);
+			has_init = 1;
+			if (is_stat) {
+				int sign = 1;
+				if (cur_tok.type == TOKEN_MINUS) { sign = -1; match(TOKEN_MINUS); }
+				if (cur_tok.type == TOKEN_INT_LIT) {
+					init_int = sign * cur_tok.int_val;
+					init_float = (double)init_int;
+					match(TOKEN_INT_LIT);
+				}
+				else if (cur_tok.type == TOKEN_FLOAT_LIT) {
+					init_float = sign * cur_tok.float_val;
+					init_int = (int)init_float;
+					match(TOKEN_FLOAT_LIT);
+				}
+				else {
+					fprintf(stderr, "Semantic Error: Static initializer must be constant.\n");
+					exit(1);
+				}
+			}
+			else {
+				dyn_init_expr = parse_expr();
+			}
+		}
+		
 		match(TOKEN_SEMI);
 
 		// Calculate layout width bytes allocation requirements
@@ -704,19 +746,45 @@ ASTNode* parse_stmt(void) {
 			else { exit(1); }
 		}
 
-		local_offset += (var_size * total);
-		if (local_offset > max_function_stack_bytes) {
-			max_function_stack_bytes = local_offset;
-		}
-
 		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
 		strcpy(sym->name, name);
 		sym->type = vt;
-		sym->is_local = 1;
-		sym->offset = -local_offset;
 		sym->scope_level = current_scope_level;
+
+		if (is_stat) {
+			// Persistent storage in .data segment (NOT cleared on function exit!)
+			sym->is_local = 0;
+			sym->is_static = 1;
+			sym->is_global_var = 1;
+			sym->has_init = has_init;
+			sym->init_int = init_int;
+			sym->init_float = init_float;
+			sprintf(sym->asm_label, "static_%s_%s_%d", current_func_name, name, static_var_counter++);
+		}
+		else {
+			local_offset += (var_size * total);
+			if (local_offset > max_function_stack_bytes) {
+				max_function_stack_bytes = local_offset;
+			}
+			sym->is_local = 1;
+			sym->offset = -local_offset;
+		}
+
 		sym->next = sym_table;
 		sym_table = sym;
+
+		// If a normal local variable had '= expr', lower it into an AST_ASSIGN node
+		if (!is_stat && dyn_init_expr != NULL) {
+			ASTNode* id_node = create_node(AST_IDENT);
+			strcpy(id_node->name, name);
+			id_node->type = vt;
+
+			ASTNode* assign_node = create_node(AST_ASSIGN);
+			assign_node->left = id_node;
+			assign_node->right = dyn_init_expr;
+			assign_node->type = vt;
+			return assign_node;
+		}
 
 		ASTNode* n = create_node(AST_VAR_DECL);
 		strcpy(n->name, name);
@@ -803,19 +871,17 @@ ASTNode* parse_stmt(void) {
 }
 
 ASTNode* parse_program(void) {
-	// 1. Reset localized stack tracking metrics for the incoming function frame
+	// 1. Reset localized stack tracking metrics for the incoming top-level item
 	local_offset = 0;
 	current_scope_level = 0;
 
-	// 2. INTERNAL LOOP: Drain ALL top-level type definitions (structs/unions)
+	// 2. INTERNAL LOOP: Drain ALL top-level type definitions (structs/unions/typedefs)
 	// and register them into the environment structures before parsing code.
 	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION || cur_tok.type == TOKEN_TYPEDEF) {
 		if (cur_tok.type == TOKEN_TYPEDEF) {
-			// Reuse our statement-level parsing block to register global typedef aliases seamlessly!
 			parse_stmt();
 		}
-		else
-		{
+		else {
 			parse_struct_or_union_declaration(cur_tok.type == TOKEN_UNION);
 			if (cur_tok.type == TOKEN_SEMI) {
 				match(TOKEN_SEMI);
@@ -823,40 +889,127 @@ ASTNode* parse_program(void) {
 		}
 	}
 
-	// 3. ROBUST RECOVERY: Aggressively catch EOF or trailing text debris
-	// (like "this is test file" at the bottom) to block unhandled lookahead crashes.
+	// 3. ROBUST RECOVERY: Catch EOF or trailing text debris cleanly
 	if (cur_tok.type == TOKEN_EOF) {
-		ASTNode* eof_node = create_node(AST_PROGRAM);
-		return eof_node;
+		return create_node(AST_PROGRAM);
 	}
 
-	if (cur_tok.type != TOKEN_IDENT && cur_tok.type != TOKEN_VOID && cur_tok.type != TOKEN_CHAR) {
-		// A rogue layout token was hit out of scope. Force a clean exit state.
+	if (cur_tok.type != TOKEN_STATIC && !is_type_name(cur_tok) && cur_tok.type != TOKEN_VOID) {
 		ASTNode* eof_node = create_node(AST_PROGRAM);
 		cur_tok.type = TOKEN_EOF;
 		return eof_node;
 	}
 
-	// 4. Evaluate the function return type identifier
-	DataTypeKind ret_kind = TYPE_INT; // Default fallback
-	if (cur_tok.type == TOKEN_IDENT || cur_tok.type == TOKEN_VOID || cur_tok.type == TOKEN_CHAR) {
-		if (cur_tok.type == TOKEN_IDENT && strcmp(cur_tok.lexeme, "float") == 0) {
-			ret_kind = TYPE_FLOAT;
-		}
-		else if (cur_tok.type == TOKEN_CHAR) {
-			ret_kind = TYPE_CHAR;
-		}
-		// Consume whichever primitive return keyword token was matched
-		match(cur_tok.type);
+	// 4. Check for optional file-scope 'static' storage-class specifier
+	int is_file_static = 0;
+	if (cur_tok.type == TOKEN_STATIC) {
+		is_file_static = 1;
+		match(TOKEN_STATIC);
 	}
 
-	// 5. Capture the exact name string identifier of the function
+	// 5. Parse the base type (void, int, float, char, struct/union, or typedef alias)
+	DataType decl_type;
+	memset(&decl_type, 0, sizeof(decl_type));
+	DataTypeKind ret_kind = TYPE_INT;
+
+	if (cur_tok.type == TOKEN_VOID) {
+		ret_kind = TYPE_INT;
+		decl_type.kind = TYPE_INT;
+		match(TOKEN_VOID);
+	}
+	else {
+		decl_type = parse_base_type();
+		ret_kind = decl_type.kind;
+	}
+
+	// Parse pointer asterisks (e.g., int* global_ptr; or char* helper_func())
+	while (cur_tok.type == TOKEN_STAR) {
+		match(TOKEN_STAR);
+		DataType* base = (DataType*)calloc(1, sizeof(DataType));
+		if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+		*base = decl_type;
+		memset(&decl_type, 0, sizeof(decl_type));
+		decl_type.kind = TYPE_POINTER;
+		decl_type.base_type = base;
+		ret_kind = TYPE_POINTER;
+	}
+
+	// 6. Capture the identifier name (global variable name or function name)
 	char name[64];
 	strcpy(name, cur_tok.lexeme);
 	match(TOKEN_IDENT);
 
-	// 6. Parse Function Parameters List 
+	// 7. BRANCH A: GLOBAL VARIABLE DECLARATION (not followed by '(')
+	if (cur_tok.type != TOKEN_LPAREN) {
+		// Parse optional array dimensions (e.g., int g_arr[10]; or int g_mat[3][5];)
+		while (cur_tok.type == TOKEN_LBRACKET) {
+			match(TOKEN_LBRACKET);
+			decl_type.is_array = 1;
+			decl_type.dimensions[decl_type.dim_count++] = cur_tok.int_val;
+			match(TOKEN_INT_LIT);
+			match(TOKEN_RBRACKET);
+		}
+
+		// Parse optional constant initializer (e.g., int g_x = -15; or float g_f = 3.5;)
+		int has_init = 0;
+		int init_int = 0;
+		double init_float = 0.0;
+
+		if (cur_tok.type == TOKEN_ASSIGN) {
+			match(TOKEN_ASSIGN);
+			has_init = 1;
+
+			int sign = 1;
+			if (cur_tok.type == TOKEN_MINUS) {
+				sign = -1;
+				match(TOKEN_MINUS);
+			}
+
+			if (cur_tok.type == TOKEN_INT_LIT) {
+				init_int = sign * cur_tok.int_val;
+				init_float = (double)init_int;
+				match(TOKEN_INT_LIT);
+			}
+			else if (cur_tok.type == TOKEN_FLOAT_LIT) {
+				init_float = sign * cur_tok.float_val;
+				init_int = (int)init_float;
+				match(TOKEN_FLOAT_LIT);
+			}
+			else {
+				fprintf(stderr, "Semantic Error: Global variable '%s' requires a constant initializer.\n", name);
+				exit(1);
+			}
+		}
+
+		match(TOKEN_SEMI);
+
+		// Register the global/static variable in the persistent symbol table
+		Symbol* g_sym = (Symbol*)calloc(1, sizeof(Symbol));
+		if (!g_sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+		strcpy(g_sym->name, name);
+		strcpy(g_sym->asm_label, name);
+		g_sym->type = decl_type;
+		g_sym->is_local = 0;
+		g_sym->is_static = is_file_static;
+		g_sym->is_global_var = 1;
+		g_sym->has_init = has_init;
+		g_sym->init_int = init_int;
+		g_sym->init_float = init_float;
+		g_sym->scope_level = 0;
+		g_sym->next = sym_table;
+		sym_table = g_sym;
+
+		// Return a variable declaration node (ignored during instruction emission,
+		// emitted later into .data by emit_global_variables())
+		ASTNode* var_node = create_node(AST_VAR_DECL);
+		strcpy(var_node->name, name);
+		return var_node;
+	}
+
+	// 8. BRANCH B: FUNCTION PROTOTYPE OR DEFINITION
+	strcpy(current_func_name, name);
 	match(TOKEN_LPAREN);
+
 	int arg_off = 8; // Standard x86 32-bit EBP offset tracking for arguments (EBP+8, EBP+12...)
 	int is_var = 0;
 
@@ -871,17 +1024,7 @@ ASTNode* parse_program(void) {
 			break;
 		}
 
-		DataType pt;
-		memset(&pt, 0, sizeof(pt));
-
-		if (cur_tok.type == TOKEN_CHAR) {
-			pt.kind = TYPE_CHAR;
-			match(TOKEN_CHAR);
-		}
-		else {
-			pt.kind = (strcmp(cur_tok.lexeme, "float") == 0) ? TYPE_FLOAT : TYPE_INT;
-			match(TOKEN_IDENT); // Consume type name string
-		}
+		DataType pt = parse_base_type();
 
 		// Check for pointer argument layers (e.g., char* message)
 		while (cur_tok.type == TOKEN_STAR) {
@@ -896,13 +1039,13 @@ ASTNode* parse_program(void) {
 
 		char p_name[64];
 		strcpy(p_name, cur_tok.lexeme);
-		match(TOKEN_IDENT); // Consume parameter identifier string
+		match(TOKEN_IDENT);
 
 		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
 		if (!sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 		strcpy(sym->name, p_name);
 		sym->type = pt;
-		sym->is_local = 1; // Temporarily link as local stack tracker variable
+		sym->is_local = 1;
 		sym->offset = arg_off;
 		sym->scope_level = current_scope_level;
 		arg_off += 4;
@@ -916,51 +1059,49 @@ ASTNode* parse_program(void) {
 	}
 	match(TOKEN_RPAREN);
 
-	// 7. CRITICAL HEADER PROTOTYPE LOOKAHEAD CHECK
+	// 9. CRITICAL HEADER PROTOTYPE LOOKAHEAD CHECK
 	if (cur_tok.type == TOKEN_SEMI) {
-		match(TOKEN_SEMI); // Consume terminating ';'
+		match(TOKEN_SEMI);
 
-		// Wipe the parameter symbols we just loaded since there's no actual execution body block
+		// Wipe parameter symbols since there is no function body
 		void clear_local_symbols(void);
 		clear_local_symbols();
 
-		// Append an explicit reference block to the symbol table tagged as an external import
 		Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
 		if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 		strcpy(func_sym->name, name);
 		func_sym->type.kind = ret_kind;
 		func_sym->is_local = 0;
-		func_sym->is_extern = 1; // <-- Marked as External!
+		func_sym->is_extern = 1;
 		func_sym->is_variadic = is_var;
 		func_sym->next = sym_table;
 		sym_table = func_sym;
 
-		// Return an unmapped variable node frame that code generation naturally bypasses
-		ASTNode* empty_proto = create_node(AST_VAR_DECL);
-		return empty_proto;
+		return create_node(AST_VAR_DECL);
 	}
 
-	// 8. Otherwise: It's a localized function containing a physical declaration body
+	// 10. FUNCTION DEFINITION WITH BODY
 	Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
 	if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 	strcpy(func_sym->name, name);
 	func_sym->type.kind = ret_kind;
 	func_sym->is_local = 0;
-	func_sym->is_extern = 0; // Local execution frame
+	func_sym->is_static = is_file_static;
+	func_sym->is_extern = 0;
 	func_sym->is_variadic = is_var;
 	func_sym->next = sym_table;
 	sym_table = func_sym;
 
-	// Parse out statement body blocks cleanly
 	ASTNode* n = create_node(AST_FUNC_DECL);
 	strcpy(n->name, name);
 	n->body = parse_stmt();
 
-	// Calculate and align total internal local variables requirements to a 16-byte stack boundary
+	// Align local variable stack allocation to 16-byte boundary
 	n->int_val = ((max_function_stack_bytes + 15) & ~15) + 16;
 
-	// Reset variable layout width bounds trackers back for the next function declaration
+	// Reset trackers for the next top-level declaration
 	max_function_stack_bytes = 64;
+	strcpy(current_func_name, "global");
 
 	return n;
 }

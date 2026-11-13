@@ -9,3 +9,8 @@ link.exe /subsystem:console /entry:mainCRTStartup output.obj legacy_stdio_defini
 
 output.exe
 echo %errorlevel%
+
+cc_compiler.exe test_globals.c test_globals.asm
+ml /coff test_globals.asm /link /SUBSYSTEM:CONSOLE legacy_stdio_definitions.lib ucrt.lib vcruntime.lib msvcrt.lib
+test_globals.exe
+echo %errorlevel%

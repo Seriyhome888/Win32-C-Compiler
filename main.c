@@ -94,7 +94,7 @@ int main(int argc, char* argv[]) {
 	// Dynamic Externs replacement hook
 	void emit_external_declarations(void);
 	emit_external_declarations(); 
-
+	emit_global_variables();
 	void flush_global_data_segment(void);
 	flush_global_data_segment();
 

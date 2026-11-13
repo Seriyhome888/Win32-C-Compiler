@@ -69,6 +69,47 @@ void flush_global_data_segment(void) {
 	}
 }
 
+void emit_global_variables(void) {
+	Symbol* sym = sym_table;
+	int has_globals = 0;
+	while (sym) {
+		if (sym->is_global_var) { has_globals = 1; break; }
+		sym = sym->next;
+	}
+	if (!has_globals) return;
+
+	printf("\n.data\n");
+	sym = sym_table;
+	while (sym) {
+		if (sym->is_global_var) {
+			if (!sym->is_static) {
+				printf("PUBLIC %s\n", sym->asm_label);
+			}
+			int total_elems = 1;
+			if (sym->type.is_array) {
+				for (int i = 0; i < sym->type.dim_count; i++) {
+					total_elems *= sym->type.dimensions[i];
+				}
+			}
+
+			if (sym->type.is_array || sym->type.kind == TYPE_STRUCT || sym->type.kind == TYPE_UNION) {
+				int total_bytes = get_type_size(sym->type);
+				printf("%s DB %d DUP(0)\n", sym->asm_label, total_bytes);
+			}
+			else if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL) {
+				printf("%s DB %d\n", sym->asm_label, sym->has_init ? (sym->init_int & 0xFF) : 0);
+			}
+			else if (sym->type.kind == TYPE_FLOAT) {
+				printf("%s REAL4 %f\n", sym->asm_label, sym->has_init ? sym->init_float : 0.0);
+			}
+			else {
+				printf("%s DD %d\n", sym->asm_label, sym->has_init ? sym->init_int : 0);
+			}
+		}
+		sym = sym->next;
+	}
+}
+
 static const char* reg_names_8[] = { "al", "cl", "dl" };
 
 // Track the current function's dynamic spilling offset allocation bounds
@@ -211,7 +252,11 @@ void emit_code(ASTNode* node) {
 		int func_exit_lbl = gen_label();
 		node->op = func_exit_lbl;
 
-		printf("PUBLIC %s\n", node->name);
+		Symbol* fn = lookup_symbol(node->name);
+		if (!fn || !fn->is_static) {
+			printf("PUBLIC %s\n", node->name);
+		}
+
 		printf("%s proc\n", node->name);
 		printf("    push ebp\n    mov ebp, esp\n");
 
@@ -232,22 +277,31 @@ void emit_code(ASTNode* node) {
 		node->type = sym->type;
 		node->int_val = r;
 
-		// --- FIXED: Only load an 8-bit byte if it's a RAW char, NOT a pointer to a char (char*) ---
-		if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL) {
-			if (sym->offset < 0) {
-				printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -sym->offset);
-			}
-			else {
-				printf("    movzx %s, byte ptr [ebp + %d]\n", reg_names[r], sym->offset);
-			}
+		if (sym->is_global_var) {
+			if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL)
+				printf("    movzx %s, byte ptr [%s]\n", reg_names[r], sym->asm_label);
+			else
+				printf("    mov %s, dword ptr [%s]\n", reg_names[r], sym->asm_label);
 		}
-		else {
-			// Pointers (char*) and normal 32-bit Integers read normally here
-			if (sym->offset < 0) {
-				printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+		else
+		{
+			// --- FIXED: Only load an 8-bit byte if it's a RAW char, NOT a pointer to a char (char*) ---
+			if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL) {
+				if (sym->offset < 0) {
+					printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+				}
+				else {
+					printf("    movzx %s, byte ptr [ebp + %d]\n", reg_names[r], sym->offset);
+				}
 			}
 			else {
-				printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+				// Pointers (char*) and normal 32-bit Integers read normally here
+				if (sym->offset < 0) {
+					printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+				}
+				else {
+					printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+				}
 			}
 		}
 		break;
@@ -293,7 +347,10 @@ void emit_code(ASTNode* node) {
 				printf("    jne $$L%d\n", shortcut_label);
 			}
 
-			// We need a stable output container register that survives both branches identically
+			// Free left register immediately after branching so it doesn't stay pinned during right evaluation
+			free_register(rl);
+
+			// Allocate a stable output container register that survives both branches identically
 			int out_reg = allocate_register();
 
 			// 2. Fallthrough branch path: Left condition didn't skip, so evaluate the right side
@@ -306,8 +363,7 @@ void emit_code(ASTNode* node) {
 			printf("    setne %s\n", (out_reg == 0) ? "al" : (out_reg == 1) ? "cl" : "dl");
 			printf("    movzx %s, %s\n", reg_names[out_reg], (out_reg == 0) ? "al" : (out_reg == 1) ? "cl" : "dl");
 
-			// De-allocate temporary child calculation trackers safely
-			free_register(rl);
+			// De-allocate temporary right child calculation tracker safely
 			free_register(rr);
 
 			printf("    jmp $$L%d\n", end_label);
@@ -341,17 +397,22 @@ void emit_code(ASTNode* node) {
 		int rr = node->right->int_val;
 
 		// 3. CRITICAL HOOK: Verify if our left register got spilled during the right child's generation pass!
-		rl = ensure_register_loaded(rl);
+		// Protect 'rr' so un-spilling 'rl' never overwrites the right operand's register.
+		if (rl >= 0 && rl < 3 && spill_offsets[rl] > 0) {
+			int saved_rr_state = reg_map[rr];
+			reg_map[rr] = 1;
+			rl = ensure_register_loaded(rl);
+			reg_map[rr] = saved_rr_state;
+		}
 
 		if (!is_float) {
-			// --- FIXED TYPE-AWARE BINARY OPERATION STRIDE ENGINE ---
+			// --- TYPE-AWARE BINARY OPERATION STRIDE ENGINE ---
 			int works_as_pointer = (node->left->type.kind == TYPE_POINTER || node->left->type.base_type != NULL ||
 				node->right->type.kind == TYPE_POINTER || node->right->type.base_type != NULL ||
 				node->type.kind == TYPE_POINTER || node->type.base_type != NULL);
 
 			if (node->op == TOKEN_PLUS) {
 				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
-					// --- FIXED: Safely route register index checks via our universal hook ---
 					printf("    add %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
 				}
 				else {
@@ -360,7 +421,6 @@ void emit_code(ASTNode* node) {
 			}
 			else if (node->op == TOKEN_MINUS) {
 				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
-					// --- FIXED: Safely route register index checks via our universal hook ---
 					printf("    sub %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
 				}
 				else {
@@ -369,7 +429,6 @@ void emit_code(ASTNode* node) {
 			}
 			else if (node->op == TOKEN_STAR) {
 				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
-					// --- FIXED: Safely route register index checks via our universal hook ---
 					printf("    imul %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
 				}
 				else {
@@ -377,7 +436,7 @@ void emit_code(ASTNode* node) {
 				}
 			}
 
-			// --- INTEGER DIVISION & MODULO PIPELINE REMAINING STABLE ---
+			// --- INTEGER DIVISION & MODULO PIPELINE ---
 			else if (node->op == TOKEN_SLASH || node->op == TOKEN_PERCENT) {
 				int ext_eax_active = (reg_map[0] && rl != 0 && rr != 0);
 				int ext_edx_active = (reg_map[2] && rl != 2 && rr != 2);
@@ -419,17 +478,12 @@ void emit_code(ASTNode* node) {
 				node->int_val = rl;
 			}
 		}
-
-
-
-
 		else {
-			// FIXED SSE2 FLOATING-POINT PIPELINE
+			// SSE2 FLOATING-POINT PIPELINE
 			if (node->left->type.kind == TYPE_INT) {
 				printf("    cvtsi2ss xmm0, %s\n", reg_names[rl]);
 			}
 			else {
-				// Move the raw raw float bits directly from the general-purpose register into xmm0
 				printf("    movd xmm0, %s\n", reg_names[rl]);
 			}
 
@@ -437,30 +491,26 @@ void emit_code(ASTNode* node) {
 				printf("    cvtsi2ss xmm1, %s\n", reg_names[rr]);
 			}
 			else {
-				// Move the raw float bits directly from the general-purpose register into xmm1
 				printf("    movd xmm1, %s\n", reg_names[rr]);
 			}
-			free_register(rr); // Free right register early
+			free_register(rr);
 
 			if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER || node->op == TOKEN_EQUAL) {
 				printf("    comiss xmm0, xmm1\n");
 				const char* bytes[] = { "al", "cl", "dl" };
-				if (node->op == TOKEN_EQUAL) printf("    sete %s\n", bytes[rl]);
-				// setb maps to < for floats, seta maps to > for floats
-				else if (node->op == TOKEN_LESS) printf("    setb %s\n", bytes[rl]);
+				if (node->op == TOKEN_EQUAL)        printf("    sete %s\n", bytes[rl]);
+				else if (node->op == TOKEN_LESS)    printf("    setb %s\n", bytes[rl]);
 				else if (node->op == TOKEN_GREATER) printf("    seta %s\n", bytes[rl]);
 				printf("    movzx %s, %s\n", reg_names[rl], bytes[rl]);
 				node->int_val = rl;
-				node->type.kind = TYPE_INT; // Boolean evaluation results are integers
+				node->type.kind = TYPE_INT;
 			}
 			else {
-				if (node->op == TOKEN_PLUS) printf("    addss xmm0, xmm1\n");
+				if (node->op == TOKEN_PLUS)       printf("    addss xmm0, xmm1\n");
 				else if (node->op == TOKEN_MINUS) printf("    subss xmm0, xmm1\n");
-				else if (node->op == TOKEN_STAR) printf("    mulss xmm0, xmm1\n");
+				else if (node->op == TOKEN_STAR)  printf("    mulss xmm0, xmm1\n");
 				else if (node->op == TOKEN_SLASH) printf("    divss xmm0, xmm1\n");
 
-				// Safely extract the float results back out into a general-purpose register
-				// WITHOUT mutating or spilling onto 'esp'
 				printf("    movd %s, xmm0\n", reg_names[rl]);
 				node->int_val = rl;
 				node->type.kind = TYPE_FLOAT;
@@ -489,14 +539,19 @@ void emit_code(ASTNode* node) {
 		printf("    shl %s, 2\n", reg_names[r_off]);
 
 		int r_ad = allocate_register();
-		if (sym->offset < 0) {
+		if (sym->is_global_var) {
+			// Global and static arrays live in the .data segment
+			printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
+			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
+		}
+		else if (sym->offset < 0) {
 			// Local stack memory allocation maps below EBP
 			printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
 			// Step upward into the allocated block memory layout
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 		else {
-			// Global reference arguments map above EBP
+			// Function pointer/array arguments map above EBP
 			printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
@@ -524,14 +579,20 @@ void emit_code(ASTNode* node) {
 			}
 
 			int r_addr = allocate_register();
-			if (right_sym->offset < 0) {
+			if (right_sym->is_global_var) {
+				printf("    lea %s, dword ptr [%s]\n", reg_names[r_addr], right_sym->asm_label);
+			}
+			else if (right_sym->offset < 0) {
 				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -right_sym->offset);
 			}
 			else {
 				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], right_sym->offset);
 			}
 
-			if (left_sym->offset < 0) {
+			if (left_sym->is_global_var) {
+				printf("    mov dword ptr [%s], %s\n", left_sym->asm_label, reg_names[r_addr]);
+			}
+			else if (left_sym->offset < 0) {
 				printf("    mov dword ptr [ebp - %d], %s\n", -left_sym->offset, reg_names[r_addr]);
 			}
 			else {
@@ -559,23 +620,36 @@ void emit_code(ASTNode* node) {
 			int target_is_pointer = (sym->type.kind == TYPE_POINTER || sym->type.base_type != NULL ||
 				strcmp(sym->name, "ap") == 0 || sym->is_typedef);
 
-			if (target_is_pointer) {
-				if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
-				else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
-			}
-			else if (sym->type.kind == TYPE_CHAR) {
-				if (sym->offset < 0) printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, get_safe_reg_name(rv, sym-> type));
-				else printf("    mov byte ptr [ebp + %d], %s\n", sym->offset, get_safe_reg_name(rv, sym->type));
+			if (sym->is_global_var) {
+				if (target_is_pointer) {
+					printf("    mov dword ptr [%s], %s\n", sym->asm_label, reg_names[rv]);
+				}
+				else if (sym->type.kind == TYPE_CHAR) {
+					printf("    mov byte ptr [%s], %s\n", sym->asm_label, get_safe_reg_name(rv, sym->type));
+				}
+				else {
+					printf("    mov dword ptr [%s], %s\n", sym->asm_label, reg_names[rv]);
+				}
 			}
 			else {
-				if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
-				else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
+				if (target_is_pointer) {
+					if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
+					else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
+				}
+				else if (sym->type.kind == TYPE_CHAR) {
+					if (sym->offset < 0) printf("    mov byte ptr [ebp - %d], %s\n", -sym->offset, get_safe_reg_name(rv, sym->type));
+					else printf("    mov byte ptr [ebp + %d], %s\n", sym->offset, get_safe_reg_name(rv, sym->type));
+				}
+				else {
+					if (sym->offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -sym->offset, reg_names[rv]);
+					else printf("    mov dword ptr [ebp + %d], %s\n", sym->offset, reg_names[rv]);
+				}
 			}
 		}
 		else if (node->left->kind == AST_UNOP && node->left->op == TOKEN_STAR) {
 			ASTNode* addr_node = node->left->left;
 
-			// --- HOOK: Strip cast wrapper during indirect assignment assignment ---
+			// Strip cast wrapper during indirect assignment
 			if (addr_node && addr_node->kind == AST_UNOP && addr_node->op == TOKEN_TYPEDEF) {
 				addr_node = addr_node->left;
 			}
@@ -600,9 +674,23 @@ void emit_code(ASTNode* node) {
 				free_register(r_ptr);
 			}
 			else {
+				// Find the root struct identifier to check if it lives in .data or on the stack
+				ASTNode* root_id = node->left;
+				while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
+					root_id = root_id->left;
+				}
+				Symbol* struct_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+
 				resolve_member_offset(node->left, &calculated_offset, &target_type);
-				if (calculated_offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
-				else printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
+
+				if (struct_sym && struct_sym->is_global_var) {
+					int member_disp = calculated_offset - struct_sym->offset;
+					printf("    mov dword ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names[rv]);
+				}
+				else {
+					if (calculated_offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
+					else printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
+				}
 			}
 		}
 		else if (node->left->kind == AST_ARRAY_ACCESS) {
@@ -620,7 +708,11 @@ void emit_code(ASTNode* node) {
 			printf("    shl %s, 2\n", reg_names[r_off]);
 
 			int r_ad = allocate_register();
-			if (sym->offset < 0) {
+			if (sym->is_global_var) {
+				printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
+				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
+			}
+			else if (sym->offset < 0) {
 				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
 				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 			}
@@ -634,16 +726,13 @@ void emit_code(ASTNode* node) {
 			free_register(r_off);
 		}
 
-		// Clean up the assigned value register cleanly
-		//free_register(rv);
-
-// --- FIXED: Pass the assigned register value up to the parent node context ---
+		// Pass the assigned register value up to the parent node context
 		node->int_val = rv;
 		break;
 	}
 
 	case AST_UNOP: {
-		// FIXED: Catch our custom implicit floating-point promotion conversion node early
+		// Implicit floating-point promotion conversion node
 		if (node->op == TOKEN_FLOAT_LIT) {
 			emit_code(node->left);
 			int rl = node->left->int_val;
@@ -654,6 +743,31 @@ void emit_code(ASTNode* node) {
 
 			free_register(rl);
 			node->int_val = r_dest;
+			break;
+		}
+
+		// --- ADDRESS-OF (&) ENGINE ---
+		// Handled BEFORE evaluating node->left so we don't waste a register load
+		// or trigger a register spill when taking the address of a variable.
+		if (node->op == TOKEN_AMP) {
+			if (node->left->kind == AST_IDENT) {
+				Symbol* sym = lookup_symbol(node->left->name);
+				if (!sym) { printf("Semantic Error: %s undefined.\n", node->left->name); exit(1); }
+				int r = allocate_register();
+				if (sym->is_global_var) {
+					printf("    lea %s, dword ptr [%s]\n", reg_names[r], sym->asm_label);
+				}
+				else if (sym->offset < 0) {
+					printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+				}
+				else {
+					printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+				}
+				node->int_val = r;
+			}
+			else {
+				printf("Backend Error: Lvalue required.\n"); exit(1);
+			}
 			break;
 		}
 
@@ -703,26 +817,10 @@ void emit_code(ASTNode* node) {
 			int r = allocate_register();
 			int r_addr = ensure_register_loaded(rl);
 
-			// --- FIXED: Read memory address directly from 'r_addr' without recursive clobbering ---
 			printf("    mov %s, dword ptr [%s]\n", reg_names[r], reg_names[r_addr]);
 
 			free_register(r_addr);
 			node->int_val = r;
-		}
-		// --- ADDRESS-OF (&) ENGINE ---
-		else if (node->op == TOKEN_AMP) {
-			if (node->left->kind == AST_IDENT) {
-				Symbol* sym = lookup_symbol(node->left->name);
-				if (!sym) { printf("Semantic Error: %s undefined.\n", node->left->name); exit(1); }
-				int r = allocate_register();
-				if (sym->offset < 0) printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
-				else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
-				free_register(rl);
-				node->int_val = r;
-			}
-			else {
-				printf("Backend Error: Lvalue required.\n"); exit(1);
-			}
 		}
 		// --- UNARY MINUS (-) ENGINE ---
 		else if (node->op == TOKEN_MINUS) {

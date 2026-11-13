@@ -104,6 +104,7 @@ Token next_token(void) {
 		else if (strcmp(tok.lexeme, "default") == 0) tok.type = TOKEN_DEFAULT; 
 		else if (strcmp(tok.lexeme, "typedef") == 0) tok.type = TOKEN_TYPEDEF;
 		else if (strcmp(tok.lexeme, "sizeof") == 0) tok.type = TOKEN_SIZEOF;
+		else if (strcmp(tok.lexeme, "static") == 0) tok.type = TOKEN_STATIC;
 		else tok.type = TOKEN_IDENT;
 		return tok;
 	}
