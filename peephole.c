@@ -72,7 +72,7 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 	char lbl_name[64];
 	if (sscanf(clean, "%63[^:]:", lbl_name) == 1 && strchr(clean, ':') != NULL) {
 		lbl_name[strcspn(lbl_name, " \t\r\n")] = '\0';
-		if (lbl_name[0] == 'L' || lbl_name[0] == '$') {
+		if (strncmp(lbl_name, "$$L", 3) == 0) {
 			int is_referenced = 0;
 			for (int i = 0; i < registered_label_count; i++) {
 				if (strcmp(label_registry[i], lbl_name) == 0 && label_ref_counts[i] > 0) {

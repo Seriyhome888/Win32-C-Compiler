@@ -568,28 +568,42 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 	int total_size = 0;
 	int current_offset = 0;
 
-	// FIXED LOOP PIPELINE
 	while (cur_tok.type != TOKEN_RBRACE && cur_tok.type != TOKEN_EOF) {
-		DataType m_type;
-		memset(&m_type, 0, sizeof(m_type));
+		// 1. Parse any valid base type (int, float, char, struct/union, typedef)
+		DataType m_type = parse_base_type();
 
-		// 1. Check field type lexeme without consuming it prematurely
-		m_type.kind = (strcmp(cur_tok.lexeme, "float") == 0) ? TYPE_FLOAT : TYPE_INT;
+		// 2. Parse pointer levels (e.g., char* name; or struct Node* next;)
+		while (cur_tok.type == TOKEN_STAR) {
+			match(TOKEN_STAR);
+			DataType* base = (DataType*)calloc(1, sizeof(DataType));
+			if (!base) {
+				fprintf(stderr, "Fatal Error: Out of memory during pointer member allocation.\n");
+				exit(1);
+			}
+			*base = m_type;
+			memset(&m_type, 0, sizeof(m_type));
+			m_type.kind = TYPE_POINTER;
+			m_type.base_type = base;
+		}
 
-		// 2. Consume the type keyword identifier token ("int" or "float") safely
-		match(TOKEN_IDENT);
-
-		// 3. Extract the member name identifier string (e.g., "id", "age")
+		// 3. Extract the member name identifier
 		char m_name[64];
 		strcpy(m_name, cur_tok.lexeme);
-
-		// 4. Consume the member name identifier token 
 		match(TOKEN_IDENT);
 
-		// 5. Consume the terminating semicolon syntax marker
+		// 4. Support fixed-size array members inside structs/unions
+		while (cur_tok.type == TOKEN_LBRACKET) {
+			match(TOKEN_LBRACKET);
+			m_type.is_array = 1;
+			m_type.dimensions[m_type.dim_count++] = cur_tok.int_val;
+			match(TOKEN_INT_LIT);
+			match(TOKEN_RBRACKET);
+		}
+
 		match(TOKEN_SEMI);
 
-		// Allocate and populate member attributes
+		int member_size = get_type_size(m_type);
+
 		Member* m = (Member*)calloc(1, sizeof(Member));
 		if (!m) {
 			fprintf(stderr, "Fatal Error: Out of memory during member allocation.\n");
@@ -599,16 +613,14 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 		m->type = m_type;
 
 		if (is_union) {
-			// Union members share stack alignment offset 0
 			m->offset = 0;
-			if (4 > total_size) {
-				total_size = 4; // Track widest element primitive bounds size
+			if (member_size > total_size) {
+				total_size = member_size;
 			}
 		}
 		else {
-			// Struct members increment sequential byte layouts linearly
 			m->offset = current_offset;
-			current_offset += 4;
+			current_offset += member_size;
 			total_size = current_offset;
 		}
 

@@ -1,6 +1,9 @@
 #include "cc.h"
 #include <stdarg.h>
 
+#define MAX_SPILLS 256
+static int spill_base_offset = 0;
+
 #define MAX_LITERAL_BUFFER 512
 typedef struct {
 	int id;
@@ -159,6 +162,10 @@ int allocate_register(void) {
 
 	// Grow our spill offset allocation bounds deeper into the reserved tail padding segment
 	spill_stack_offset += 4;
+	if (spill_stack_offset - spill_base_offset > MAX_SPILLS) {
+		fprintf(stderr, "Backend Error: Register spill area exhausted.\n");
+		exit(1);
+	}
 	spill_offsets[victim] = spill_stack_offset;
 
 	// Emit the physical assembly instruction to spill the register safely
@@ -183,6 +190,16 @@ static LoopFrame loop_stack[32];
 static int loop_stack_top = 0;
 
 int ensure_register_loaded(int r);
+
+static int get_array_element_size(DataType type) {
+	if (type.kind == TYPE_POINTER || type.base_type != NULL) {
+		return 4;
+	}
+	DataType elem_type = type;
+	elem_type.is_array = 0;
+	elem_type.dim_count = 0;
+	return get_type_size(elem_type);
+}
 
 void compile_array_offset(ASTNode* node, int* dim, Symbol* sym, int* r_out) {
 	if (node->left->kind == AST_ARRAY_ACCESS) {
@@ -247,6 +264,7 @@ void emit_code(ASTNode* node) {
 		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
 
 		// --- FIXED: Start register spills safely BELOW the function's local variables ---
+		spill_base_offset = node->int_val;
 		spill_stack_offset = node->int_val;
 
 		int func_exit_lbl = gen_label();
@@ -535,31 +553,39 @@ void emit_code(ASTNode* node) {
 		compile_array_offset(node, &dim, sym, &r_off);
 		r_off = ensure_register_loaded(r_off);
 
-		// Scale the flat index by element width size (4 bytes for 32-bit types)
-		printf("    shl %s, 2\n", reg_names[r_off]);
+		int elem_size = get_array_element_size(sym->type);
+		if (elem_size == 4) {
+			printf("    shl %s, 2\n", reg_names[r_off]);
+		}
+		else if (elem_size != 1) {
+			printf("    imul %s, %d\n", reg_names[r_off], elem_size);
+		}
 
 		int r_ad = allocate_register();
 		if (sym->is_global_var) {
-			// Global and static arrays live in the .data segment
 			printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 		else if (sym->offset < 0) {
-			// Local stack memory allocation maps below EBP
 			printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-			// Step upward into the allocated block memory layout
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 		else {
-			// Function pointer/array arguments map above EBP
 			printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
 			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 		}
 
 		free_register(r_off);
 
-		// Dereference computed target address cell to load the r-value payload
-		printf("    mov %s, dword ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
+		if (elem_size == 1) {
+			printf("    movzx %s, byte ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
+			node->type.kind = TYPE_CHAR;
+		}
+		else {
+			printf("    mov %s, dword ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
+			node->type = sym->type;
+			node->type.is_array = 0;
+		}
 
 		node->int_val = r_ad;
 		break;
@@ -704,8 +730,13 @@ void emit_code(ASTNode* node) {
 			compile_array_offset(node->left, &dim, sym, &r_off);
 			r_off = ensure_register_loaded(r_off);
 
-			// Scale flat matrix position index to byte strides bounds
-			printf("    shl %s, 2\n", reg_names[r_off]);
+			int elem_size = get_array_element_size(sym->type);
+			if (elem_size == 4) {
+				printf("    shl %s, 2\n", reg_names[r_off]);
+			}
+			else if (elem_size != 1) {
+				printf("    imul %s, %d\n", reg_names[r_off], elem_size);
+			}
 
 			int r_ad = allocate_register();
 			if (sym->is_global_var) {
@@ -721,7 +752,12 @@ void emit_code(ASTNode* node) {
 				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
 			}
 
-			printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
+			if (elem_size == 1) {
+				printf("    mov byte ptr [%s], %s\n", reg_names[r_ad], reg_names_8[rv]);
+			}
+			else {
+				printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
+			}
 			free_register(r_ad);
 			free_register(r_off);
 		}
@@ -828,7 +864,7 @@ void emit_code(ASTNode* node) {
 			if (node->type.kind == TYPE_FLOAT) {
 				int lbl = gen_label();
 				printf("    .data\nneg_mask_%d REAL4 -1.0\n    .code\n", lbl);
-				printf("    cvtsi2ss xmm1, dword ptr [neg_mask_%d]\n", lbl);
+				printf("    movss xmm1, dword ptr [neg_mask_%d]\n", lbl);
 				printf("    movd xmm0, %s\n", reg_names[rl_loaded]);
 				printf("    mulss xmm0, xmm1\n");
 				printf("    movd %s, xmm0\n", reg_names[rl_loaded]);
@@ -1100,16 +1136,47 @@ void emit_code(ASTNode* node) {
 			int r_ptr = node->left->int_val;
 
 			resolve_member_offset(node, &calculated_offset, &target_type);
-			printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_ptr], calculated_offset);
-			free_register(r_ptr);
-		}
-		else { // Dot Operator
-			resolve_member_offset(node, &calculated_offset, &target_type);
-			if (calculated_offset < 0) {
-				printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
+			if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
+				printf("    movzx %s, byte ptr [%s + %d]\n", reg_names[r], reg_names[r_ptr], calculated_offset);
 			}
 			else {
-				printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+				printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_ptr], calculated_offset);
+			}
+			free_register(r_ptr);
+		}
+		else { // Dot Operator (.)
+			ASTNode* root_id = node;
+			while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
+				root_id = root_id->left;
+			}
+			Symbol* struct_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+
+			resolve_member_offset(node, &calculated_offset, &target_type);
+
+			if (struct_sym && struct_sym->is_global_var) {
+				int member_disp = calculated_offset - struct_sym->offset;
+				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
+					printf("    movzx %s, byte ptr [%s + %d]\n", reg_names[r], struct_sym->asm_label, member_disp);
+				}
+				else {
+					printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], struct_sym->asm_label, member_disp);
+				}
+			}
+			else if (calculated_offset < 0) {
+				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
+					printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
+				}
+				else {
+					printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
+				}
+			}
+			else {
+				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
+					printf("    movzx %s, byte ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+				}
+				else {
+					printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+				}
 			}
 		}
 
