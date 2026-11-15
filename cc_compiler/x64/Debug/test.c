@@ -1,6 +1,129 @@
 #include "stdio.h"
 #include "stdarg.h"
 
+struct Packet {
+	char flag;
+	char code;
+	int payload;
+	float weight;
+};
+
+// Global & file-scope static structs
+struct Packet g_pkt;
+static struct Packet s_pkt;
+
+// Global char array
+char g_chars[5];
+
+// 1. Verify global and static struct dot-access writes & reads
+int test_global_struct() {
+	g_pkt.flag = 65;      // 'A'
+	g_pkt.code = 90;      // 'Z'
+	g_pkt.payload = 1024;
+	g_pkt.weight = 3.5;
+
+	s_pkt.flag = 75;      // 'K'
+	s_pkt.code = 77;      // 'M'
+	s_pkt.payload = 2048;
+	s_pkt.weight = 1.25;
+
+	if (g_pkt.flag == 65 && g_pkt.code == 90 && g_pkt.payload == 1024 && g_pkt.weight == 3.5 &&
+		s_pkt.flag == 75 && s_pkt.code == 77 && s_pkt.payload == 2048 && s_pkt.weight == 1.25) {
+		printf("Test 1 (Global & Static Struct Dot-Access) PASSED\n");
+		return 1;
+	}
+	else {
+		printf("Test 1 (Global & Static Struct Dot-Access) FAILED\n");
+		return 0;
+	}
+}
+
+// 2. Verify char struct members do not overwrite adjacent struct fields
+int test_char_struct_members() {
+	struct Packet local_pkt;
+	struct Packet* p_pkt;
+
+	// Write in reverse/interleaved order to catch 32-bit dword clobbering
+	local_pkt.payload = 5000;
+	local_pkt.code = 66;     // 'B' (offset 1)
+	local_pkt.flag = 65;     // 'A' (offset 0) - must not clobber 'code' or 'payload'!
+	local_pkt.weight = 4.5;
+
+	if (local_pkt.flag != 65 || local_pkt.code != 66 || local_pkt.payload != 5000 || local_pkt.weight != 4.5) {
+		printf("Test 2a (Local Char Struct Member Dot-Access) FAILED: flag=%d, code=%d, payload=%d\n",
+			local_pkt.flag, local_pkt.code, local_pkt.payload);
+		return 0;
+	}
+
+	// Verify pointer arrow (->) read/write on char members
+	p_pkt = &local_pkt;
+	p_pkt->flag = 88;        // 'X'
+	p_pkt->code = 89;        // 'Y'
+
+	if (p_pkt->flag == 88 && p_pkt->code == 89 && local_pkt.payload == 5000 && sizeof(struct Packet) == 10) {
+		printf("Test 2 (Char Struct Members & sizeof(struct Packet)==10) PASSED\n");
+		return 1;
+	}
+	else {
+		printf("Test 2b (Arrow Char Struct Member / Size) FAILED: size=%d\n", sizeof(struct Packet));
+		return 0;
+	}
+}
+
+// 3. Verify 1-byte stride indexing on local and global char arrays
+int test_char_arrays() {
+	char buf[4];
+
+	// Write adjacent bytes in reverse order to ensure byte-granularity stores
+	buf[3] = 100;
+	buf[2] = 99;
+	buf[1] = 98;
+	buf[0] = 97;
+
+	g_chars[4] = 5;
+	g_chars[3] = 4;
+	g_chars[2] = 3;
+	g_chars[1] = 2;
+	g_chars[0] = 1;
+
+	int local_sum;
+	int global_sum;
+	local_sum = buf[0] + buf[1] + buf[2] + buf[3];
+	global_sum = g_chars[0] + g_chars[1] + g_chars[2] + g_chars[3] + g_chars[4];
+
+	if (local_sum == 394 && global_sum == 15 && sizeof(buf) == 4 && sizeof(g_chars) == 5) {
+		printf("Test 3 (Local & Global Char Arrays) PASSED\n");
+		return 1;
+	}
+	else {
+		printf("Test 3 (Local & Global Char Arrays) FAILED: local=%d, global=%d\n", local_sum, global_sum);
+		return 0;
+	}
+}
+
+// 4. Verify runtime unary minus (-x) on float variables and expressions
+int test_negative_floats() {
+	float pos;
+	float neg;
+	float double_neg;
+	float expr_neg;
+
+	pos = 6.25;
+	neg = -pos;                  // Triggers runtime AST_UNOP TOKEN_MINUS on TYPE_FLOAT
+	double_neg = -neg;
+	expr_neg = -(pos + 1.75);    // -8.0
+
+	if (neg == -6.25 && double_neg == 6.25 && expr_neg == -8.0 && (pos + neg) == 0.0) {
+		printf("Test 4 (Unary Float Negation) PASSED: neg=%f, expr_neg=%f\n", neg, expr_neg);
+		return 1;
+	}
+	else {
+		printf("Test 4 (Unary Float Negation) FAILED: neg=%f, double_neg=%f, expr_neg=%f\n",
+			neg, double_neg, expr_neg);
+		return 0;
+	}
+}
+
 #define INITIAL_VALUE 42
 #define STEP_INCREMENT 5
 
@@ -703,6 +826,24 @@ int main()
 	}
 	else {
 		printf("Dynamic Variadic Test 2 (6 args) FAILED\n");
+	}
+
+	printf("--- STARTING REGRESSION & BUGFIX VERIFICATION ---\n");
+
+	int passed;
+	passed = 0;
+	passed += test_global_struct();
+	passed += test_char_struct_members();
+	passed += test_char_arrays();
+	passed += test_negative_floats();
+
+	if (passed == 4) {
+		printf("ALL 4 BUGFIX TESTS PASSED!\n");
+		return 0;
+	}
+	else {
+		printf("SOME TESTS FAILED (%d / 4 passed)\n", passed);
+		return 1;
 	}
 
 	return 0;

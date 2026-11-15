@@ -9,7 +9,7 @@ typedef struct {
 	int id;
 	int is_float; // 1 = float, 0 = string
 	double float_val;
-	char str_val[128]; // <-- FIXED: Sized character array buffer bounds protection
+	char str_val[512]; // Sized character array buffer bounds protection
 } LiteralEntry;
 
 static LiteralEntry literal_pool[MAX_LITERAL_BUFFER];
@@ -27,7 +27,7 @@ void add_buffered_string(int id, const char* str) {
 	if (literal_pool_count >= MAX_LITERAL_BUFFER) return;
 	literal_pool[literal_pool_count].id = id;
 	literal_pool[literal_pool_count].is_float = 0;
-	strncpy(literal_pool[literal_pool_count].str_val, str, 127);
+	strncpy(literal_pool[literal_pool_count].str_val, str, 511);
 	literal_pool_count++;
 }
 
@@ -482,12 +482,17 @@ void emit_code(ASTNode* node) {
 				free_register(rr);
 				node->int_val = rl;
 			}
-			else if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER || node->op == TOKEN_EQUAL) {
+			else if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER ||
+				node->op == TOKEN_LESS_EQUAL || node->op == TOKEN_GREATER_EQUAL ||
+				node->op == TOKEN_EQUAL || node->op == TOKEN_NOT_EQUAL) {
 				printf("    cmp %s, %s\n", reg_names[rl], reg_names[rr]);
 				const char* bytes[] = { "al", "cl", "dl" };
-				if (node->op == TOKEN_EQUAL)       printf("    sete %s\n", bytes[rl]);
-				else if (node->op == TOKEN_LESS)    printf("    setl %s\n", bytes[rl]);
-				else if (node->op == TOKEN_GREATER) printf("    setg %s\n", bytes[rl]);
+				if (node->op == TOKEN_EQUAL)              printf("    sete %s\n", bytes[rl]);
+				else if (node->op == TOKEN_NOT_EQUAL)     printf("    setne %s\n", bytes[rl]);
+				else if (node->op == TOKEN_LESS)          printf("    setl %s\n", bytes[rl]);
+				else if (node->op == TOKEN_LESS_EQUAL)    printf("    setle %s\n", bytes[rl]);
+				else if (node->op == TOKEN_GREATER)       printf("    setg %s\n", bytes[rl]);
+				else if (node->op == TOKEN_GREATER_EQUAL) printf("    setge %s\n", bytes[rl]);
 				printf("    movzx %s, %s\n", reg_names[rl], bytes[rl]);
 			}
 
@@ -513,12 +518,17 @@ void emit_code(ASTNode* node) {
 			}
 			free_register(rr);
 
-			if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER || node->op == TOKEN_EQUAL) {
+			if (node->op == TOKEN_LESS || node->op == TOKEN_GREATER ||
+				node->op == TOKEN_LESS_EQUAL || node->op == TOKEN_GREATER_EQUAL ||
+				node->op == TOKEN_EQUAL || node->op == TOKEN_NOT_EQUAL) {
 				printf("    comiss xmm0, xmm1\n");
 				const char* bytes[] = { "al", "cl", "dl" };
-				if (node->op == TOKEN_EQUAL)        printf("    sete %s\n", bytes[rl]);
-				else if (node->op == TOKEN_LESS)    printf("    setb %s\n", bytes[rl]);
-				else if (node->op == TOKEN_GREATER) printf("    seta %s\n", bytes[rl]);
+				if (node->op == TOKEN_EQUAL)              printf("    sete %s\n", bytes[rl]);
+				else if (node->op == TOKEN_NOT_EQUAL)     printf("    setne %s\n", bytes[rl]);
+				else if (node->op == TOKEN_LESS)          printf("    setb %s\n", bytes[rl]);
+				else if (node->op == TOKEN_LESS_EQUAL)    printf("    setbe %s\n", bytes[rl]);
+				else if (node->op == TOKEN_GREATER)       printf("    seta %s\n", bytes[rl]);
+				else if (node->op == TOKEN_GREATER_EQUAL) printf("    setae %s\n", bytes[rl]);
 				printf("    movzx %s, %s\n", reg_names[rl], bytes[rl]);
 				node->int_val = rl;
 				node->type.kind = TYPE_INT;
@@ -690,17 +700,23 @@ void emit_code(ASTNode* node) {
 		else if (node->left->kind == AST_MEMBER_ACCESS) {
 			DataType target_type;
 			int calculated_offset = 0;
+			int is_char_member = 0;
 
 			if (node->left->op == TOKEN_ARROW) {
 				emit_code(node->left->left);
 				int r_ptr = node->left->left->int_val;
 				r_ptr = ensure_register_loaded(r_ptr);
 				resolve_member_offset(node->left, &calculated_offset, &target_type);
-				printf("    mov dword ptr [%s + %d], %s\n", reg_names[r_ptr], calculated_offset, reg_names[rv]);
+				is_char_member = (target_type.kind == TYPE_CHAR && target_type.base_type == NULL);
+				if (is_char_member) {
+					printf("    mov byte ptr [%s + %d], %s\n", reg_names[r_ptr], calculated_offset, reg_names_8[rv]);
+				}
+				else {
+					printf("    mov dword ptr [%s + %d], %s\n", reg_names[r_ptr], calculated_offset, reg_names[rv]);
+				}
 				free_register(r_ptr);
 			}
 			else {
-				// Find the root struct identifier to check if it lives in .data or on the stack
 				ASTNode* root_id = node->left;
 				while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
 					root_id = root_id->left;
@@ -708,14 +724,32 @@ void emit_code(ASTNode* node) {
 				Symbol* struct_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
 
 				resolve_member_offset(node->left, &calculated_offset, &target_type);
+				is_char_member = (target_type.kind == TYPE_CHAR && target_type.base_type == NULL);
 
 				if (struct_sym && struct_sym->is_global_var) {
 					int member_disp = calculated_offset - struct_sym->offset;
-					printf("    mov dword ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names[rv]);
+					if (is_char_member) {
+						printf("    mov byte ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names_8[rv]);
+					}
+					else {
+						printf("    mov dword ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names[rv]);
+					}
+				}
+				else if (calculated_offset < 0) {
+					if (is_char_member) {
+						printf("    mov byte ptr [ebp - %d], %s\n", -calculated_offset, reg_names_8[rv]);
+					}
+					else {
+						printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
+					}
 				}
 				else {
-					if (calculated_offset < 0) printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
-					else printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
+					if (is_char_member) {
+						printf("    mov byte ptr [ebp + %d], %s\n", calculated_offset, reg_names_8[rv]);
+					}
+					else {
+						printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
+					}
 				}
 			}
 		}
@@ -1036,8 +1070,8 @@ void emit_code(ASTNode* node) {
 			arg = arg->next;
 		}
 
-		// --- ARCHITECTURAL FIX: CALL-WIDE HIGHER SCOPE SAVE ---
-		// We backup the true global register context before we touch any arguments.
+		// --- CALL-WIDE HIGHER SCOPE SAVE ---
+		// Backup the true global register context before evaluating any arguments.
 		int call_base_reg_map[3];
 		int call_base_spill_offsets[3];
 		int call_base_was_spilled[3];
@@ -1045,6 +1079,16 @@ void emit_code(ASTNode* node) {
 			call_base_reg_map[i] = reg_map[i];
 			call_base_spill_offsets[i] = spill_offsets[i];
 			call_base_was_spilled[i] = was_spilled[i];
+		}
+
+		// Save any live caller-saved registers (eax, ecx, edx) BEFORE pushing call arguments
+		// so the callee arguments remain right at [esp + 0] when 'call' executes.
+		int saved_caller_regs[3] = { 0 };
+		for (int i = 0; i < 3; i++) {
+			if (call_base_reg_map[i]) {
+				printf("    push %s\n", reg_names[i]);
+				saved_caller_regs[i] = 1;
+			}
 		}
 
 		int total_stack_bytes = 0;
@@ -1055,7 +1099,6 @@ void emit_code(ASTNode* node) {
 			ASTNode* curr_arg = args_array[i];
 
 			// Restore the compiler's base calling state *before* evaluating this argument.
-			// This allows arguments to know which registers are actually free in the parent scope!
 			for (int j = 0; j < 3; j++) {
 				reg_map[j] = call_base_reg_map[j];
 				spill_offsets[j] = call_base_spill_offsets[j];
@@ -1101,8 +1144,14 @@ void emit_code(ASTNode* node) {
 		// Execute the procedural jump statement
 		printf("    call %s\n", node->name);
 
+		// Balance caller stack parameters space allocations immediately upon exit
+		if (total_stack_bytes > 0) {
+			printf("    add esp, %d\n", total_stack_bytes);
+		}
+
 		// Allocate a fresh register to capture the returned data
 		int r = allocate_register();
+		int r_was_spilled = was_spilled[r];
 
 		// Determine if the called function returns a float
 		Symbol* func_sym = lookup_symbol(node->name);
@@ -1117,9 +1166,27 @@ void emit_code(ASTNode* node) {
 			printf("    mov %s, eax\n", reg_names[r]);
 		}
 
-		// 4. Balance caller stack parameters space allocations upon exit
-		if (total_stack_bytes > 0) {
-			printf("    add esp, %d\n", total_stack_bytes);
+		// 4. Restore saved caller-saved registers in reverse push order
+		if (r_was_spilled) {
+			// 'r' is edx (index 2), whose previous value was spilled to [ebp - spill_offsets[2]]
+			// and also pushed in saved_caller_regs[2]; discard the duplicate stack push for edx.
+			for (int i = 2; i >= 0; i--) {
+				if (saved_caller_regs[i]) {
+					if (i == r) {
+						printf("    add esp, 4\n");
+					}
+					else {
+						printf("    pop %s\n", reg_names[i]);
+					}
+				}
+			}
+		}
+		else {
+			for (int i = 2; i >= 0; i--) {
+				if (saved_caller_regs[i]) {
+					printf("    pop %s\n", reg_names[i]);
+				}
+			}
 		}
 
 		node->int_val = r;

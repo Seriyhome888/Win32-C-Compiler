@@ -141,7 +141,13 @@ Token next_token(void) {
 		else { tok.type = TOKEN_STAR; }
 		break;
 	case '%': tok.type = TOKEN_PERCENT; ch = fgetc(src_file); break;
-	case '!': tok.type = TOKEN_NOT; ch = fgetc(src_file); break;
+
+	case '!':
+		ch = fgetc(src_file);
+		if (ch == '=') { tok.type = TOKEN_NOT_EQUAL; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_NOT; }
+		break;
+
 	case '&':
 		ch = fgetc(src_file);
 		if (ch == '&') { tok.type = TOKEN_LOGAND; ch = fgetc(src_file); }
@@ -181,8 +187,17 @@ Token next_token(void) {
 	case '}': tok.type = TOKEN_RBRACE; ch = fgetc(src_file); break;
 	case '[': tok.type = TOKEN_LBRACKET; ch = fgetc(src_file); break;
 	case ']': tok.type = TOKEN_RBRACKET; ch = fgetc(src_file); break;
-	case '<': tok.type = TOKEN_LESS; ch = fgetc(src_file); break;
-	case '>': tok.type = TOKEN_GREATER; ch = fgetc(src_file); break;
+
+	case '<':
+		ch = fgetc(src_file);
+		if (ch == '=') { tok.type = TOKEN_LESS_EQUAL; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_LESS; }
+		break;
+	case '>':
+		ch = fgetc(src_file);
+		if (ch == '=') { tok.type = TOKEN_GREATER_EQUAL; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_GREATER; }
+		break;
 
 	case '-':
 		ch = fgetc(src_file);
