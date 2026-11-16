@@ -693,6 +693,21 @@ int test_variadic_sum(int count, ...) {
 	return total;
 }
 
+int g_block_ext = 50;
+
+int test_storage_classes(register int param_reg) {
+	auto int a = 10;
+	register int r = 20;
+	extern int g_block_ext; // Block-scope extern resolving to file-scope g_block_ext
+
+	int sum = a + r + param_reg + g_block_ext; // 10 + 20 + 5 + 50 = 85
+	if (sum == 85) {
+		printf("auto, register & block-scope extern PASSED\n");
+		return 1;
+	}
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -837,12 +852,14 @@ int main()
 	passed += test_char_arrays();
 	passed += test_negative_floats();
 
-	if (passed == 4) {
-		printf("ALL 4 BUGFIX TESTS PASSED!\n");
+	passed += test_storage_classes(5);
+
+	if (passed == 5) {
+		printf("ALL 5 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 4 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 5 passed)\n", passed);
 		return 1;
 	}
 

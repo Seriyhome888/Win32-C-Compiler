@@ -627,6 +627,11 @@ void emit_code(ASTNode* node) {
 				exit(1);
 			}
 
+			if (right_sym->is_register) {
+				fprintf(stderr, "Semantic Error: Address of register variable '%s' requested.\n", right_sym->name);
+				exit(1);
+			}
+
 			int r_addr = allocate_register();
 			if (right_sym->is_global_var) {
 				printf("    lea %s, dword ptr [%s]\n", reg_names[r_addr], right_sym->asm_label);
@@ -836,6 +841,12 @@ void emit_code(ASTNode* node) {
 			if (node->left->kind == AST_IDENT) {
 				Symbol* sym = lookup_symbol(node->left->name);
 				if (!sym) { printf("Semantic Error: %s undefined.\n", node->left->name); exit(1); }
+
+				if (sym->is_register) {
+					fprintf(stderr, "Semantic Error: Address of register variable '%s' requested.\n", sym->name);
+					exit(1);
+				}
+
 				int r = allocate_register();
 				if (sym->is_global_var) {
 					printf("    lea %s, dword ptr [%s]\n", reg_names[r], sym->asm_label);

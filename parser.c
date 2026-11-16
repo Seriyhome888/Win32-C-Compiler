@@ -649,6 +649,13 @@ ASTNode* parse_struct_or_union_declaration(int is_union) {
 }
 
 ASTNode* parse_program(void) {
+
+	// Catch illegal file-scope storage classes early
+	if (cur_tok.type == TOKEN_AUTO || cur_tok.type == TOKEN_REGISTER) {
+		fprintf(stderr, "Semantic Error: '%s' storage class is not allowed at file scope.\n", cur_tok.lexeme);
+		exit(1);
+	}
+
 	// 1. Reset localized stack tracking metrics for the incoming top-level item
 	local_offset = 0;
 	current_scope_level = 0;
@@ -860,6 +867,16 @@ ASTNode* parse_program(void) {
 			break;
 		}
 
+		int param_is_register = 0;
+		if (cur_tok.type == TOKEN_REGISTER) {
+			param_is_register = 1;
+			match(TOKEN_REGISTER);
+		}
+		else if (cur_tok.type == TOKEN_AUTO || cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN) {
+			fprintf(stderr, "Semantic Error: Invalid storage class '%s' on parameter.\n", cur_tok.lexeme);
+			exit(1);
+		}
+
 		DataType pt = parse_base_type();
 
 		// Check for pointer argument layers (e.g., char* message)
@@ -884,6 +901,7 @@ ASTNode* parse_program(void) {
 		sym->is_local = 1;
 		sym->offset = arg_off;
 		sym->scope_level = current_scope_level;
+		sym->is_register = param_is_register;
 		arg_off += 4;
 
 		sym->next = sym_table;
@@ -997,33 +1015,80 @@ ASTNode* parse_stmt(void) {
 	}
 
 	// 2. REWRITE VARIABLE DECLARATION DETECTION BY USING OUR TYPE NAME HELPER
-	if (cur_tok.type == TOKEN_STATIC || is_type_name(cur_tok)) {
+	// 2. LOCAL DECLARATIONS: static, extern, auto, register, or type name
+	if (cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN ||
+		cur_tok.type == TOKEN_AUTO || cur_tok.type == TOKEN_REGISTER || is_type_name(cur_tok)) {
+
 		int is_stat = 0;
-		if (cur_tok.type == TOKEN_STATIC) {
-			is_stat = 1;
-			match(TOKEN_STATIC);
+		int is_ext = 0;
+		int is_reg = 0;
+		int is_auto = 0;
+
+		if (cur_tok.type == TOKEN_STATIC) { is_stat = 1; match(TOKEN_STATIC); }
+		else if (cur_tok.type == TOKEN_EXTERN) { is_ext = 1; match(TOKEN_EXTERN); }
+		else if (cur_tok.type == TOKEN_AUTO) { is_auto = 1; match(TOKEN_AUTO); }
+		else if (cur_tok.type == TOKEN_REGISTER) { is_reg = 1; match(TOKEN_REGISTER); }
+
+		if (cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN ||
+			cur_tok.type == TOKEN_AUTO || cur_tok.type == TOKEN_REGISTER) {
+			fprintf(stderr, "Syntax Error: Multiple storage-class specifiers in declaration.\n");
+			exit(1);
 		}
 
 		DataType vt = parse_base_type();
 
-		// Check for pointer asterisks (e.g., Person* ptr; or int_ptr* ptr_ptr;)
 		while (cur_tok.type == TOKEN_STAR) {
 			match(TOKEN_STAR);
 			DataType* base = (DataType*)calloc(1, sizeof(DataType));
 			if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 			*base = vt;
-
 			memset(&vt, 0, sizeof(vt));
 			vt.kind = TYPE_POINTER;
 			vt.base_type = base;
 		}
 
-		// Capture the variable name identifier
 		char name[64];
 		strcpy(name, cur_tok.lexeme);
 		match(TOKEN_IDENT);
 
-		// Calculate total array bounds sizes if bracket segments exist
+		// Block-scope function prototype: e.g., extern int helper(int x);
+		if (cur_tok.type == TOKEN_LPAREN) {
+			if (!is_ext) {
+				fprintf(stderr, "Syntax Error: Nested function definition '%s' is not allowed.\n", name);
+				exit(1);
+			}
+			match(TOKEN_LPAREN);
+			int is_var = 0;
+			while (cur_tok.type != TOKEN_RPAREN) {
+				if (cur_tok.type == TOKEN_ELLIPSIS) {
+					is_var = 1;
+					match(TOKEN_ELLIPSIS);
+					break;
+				}
+				if (cur_tok.type == TOKEN_REGISTER) match(TOKEN_REGISTER);
+				parse_base_type();
+				while (cur_tok.type == TOKEN_STAR) match(TOKEN_STAR);
+				if (cur_tok.type == TOKEN_IDENT) match(TOKEN_IDENT);
+				if (cur_tok.type == TOKEN_COMMA) match(TOKEN_COMMA);
+			}
+			match(TOKEN_RPAREN);
+			match(TOKEN_SEMI);
+
+			Symbol* existing = lookup_symbol(name);
+			if (!existing) {
+				Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
+				strcpy(func_sym->name, name);
+				func_sym->type.kind = vt.kind;
+				func_sym->is_local = 0;
+				func_sym->is_extern = 1;
+				func_sym->is_variadic = is_var;
+				func_sym->scope_level = 0;
+				func_sym->next = sym_table;
+				sym_table = func_sym;
+			}
+			return create_node(AST_VAR_DECL);
+		}
+
 		int total = 1;
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
@@ -1034,13 +1099,16 @@ ASTNode* parse_stmt(void) {
 			match(TOKEN_RBRACKET);
 		}
 
-		// Optional constant initializer (required for static, convenient for locals)
 		int has_init = 0;
 		int init_int = 0;
 		double init_float = 0.0;
 		ASTNode* dyn_init_expr = NULL;
 
 		if (cur_tok.type == TOKEN_ASSIGN) {
+			if (is_ext) {
+				fprintf(stderr, "Semantic Error: Block-scope extern '%s' cannot have an initializer.\n", name);
+				exit(1);
+			}
 			match(TOKEN_ASSIGN);
 			has_init = 1;
 			if (is_stat) {
@@ -1065,15 +1133,39 @@ ASTNode* parse_stmt(void) {
 				dyn_init_expr = parse_expr();
 			}
 		}
-		
+
 		match(TOKEN_SEMI);
 
-		// Calculate layout width bytes allocation requirements
+		// Handle block-scope extern variable
+		if (is_ext) {
+			Symbol* existing = lookup_symbol(name);
+			if (existing && existing->is_global_var && existing->scope_level == 0) {
+				// Already declared/defined at file scope; reuse it cleanly
+				ASTNode* n = create_node(AST_VAR_DECL);
+				strcpy(n->name, name);
+				return n;
+			}
+			Symbol* ext_sym = (Symbol*)calloc(1, sizeof(Symbol));
+			strcpy(ext_sym->name, name);
+			strcpy(ext_sym->asm_label, name);
+			ext_sym->type = vt;
+			ext_sym->is_local = 0;
+			ext_sym->is_extern = 1;
+			ext_sym->is_global_var = 1;
+			ext_sym->scope_level = 0; // Persistent across function exit so emit_external_declarations() sees it
+			ext_sym->next = sym_table;
+			sym_table = ext_sym;
+
+			ASTNode* n = create_node(AST_VAR_DECL);
+			strcpy(n->name, name);
+			return n;
+		}
+
 		int var_size = 4;
 		if (vt.kind == TYPE_CHAR && vt.base_type == NULL) {
 			var_size = 1;
 		}
-		else if (vt.kind == TYPE_STRUCT && vt.base_type == NULL) {
+		else if ((vt.kind == TYPE_STRUCT || vt.kind == TYPE_UNION) && vt.base_type == NULL) {
 			struct StructEnv* env = lookup_struct(vt.struct_name);
 			if (env) var_size = env->size;
 			else { exit(1); }
@@ -1083,9 +1175,9 @@ ASTNode* parse_stmt(void) {
 		strcpy(sym->name, name);
 		sym->type = vt;
 		sym->scope_level = current_scope_level;
+		sym->is_register = is_reg;
 
 		if (is_stat) {
-			// Persistent storage in .data segment (NOT cleared on function exit!)
 			sym->is_local = 0;
 			sym->is_static = 1;
 			sym->is_global_var = 1;
@@ -1106,7 +1198,6 @@ ASTNode* parse_stmt(void) {
 		sym->next = sym_table;
 		sym_table = sym;
 
-		// If a normal local variable had '= expr', lower it into an AST_ASSIGN node
 		if (!is_stat && dyn_init_expr != NULL) {
 			ASTNode* id_node = create_node(AST_IDENT);
 			strcpy(id_node->name, name);
