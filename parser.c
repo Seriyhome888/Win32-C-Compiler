@@ -654,16 +654,38 @@ ASTNode* parse_program(void) {
 	current_scope_level = 0;
 
 	int is_file_static = 0;
+	int is_file_extern = 0;
 	int has_parsed_struct_decl_type = 0;
 	DataType decl_type;
 	memset(&decl_type, 0, sizeof(decl_type));
 	DataTypeKind ret_kind = TYPE_INT;
 
 	// 2. INTERNAL LOOP: Drain top-level type definitions (struct/union definitions & typedefs)
-	// If we encounter 'struct Tag var_name;' or 'struct Tag func_name(...)', capture the type and break out.
-	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION || cur_tok.type == TOKEN_TYPEDEF) {
+	// Also handles 'struct Tag var;' or 'extern struct Tag var;' cleanly.
+	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION ||
+		cur_tok.type == TOKEN_TYPEDEF || cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN) {
+
 		if (cur_tok.type == TOKEN_TYPEDEF) {
 			parse_stmt();
+		}
+		else if (cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN) {
+			if (is_file_static || is_file_extern) {
+				fprintf(stderr, "Syntax Error: Multiple storage-class specifiers in declaration.\n");
+				exit(1);
+			}
+			if (cur_tok.type == TOKEN_STATIC) {
+				is_file_static = 1;
+				match(TOKEN_STATIC);
+			}
+			else {
+				is_file_extern = 1;
+				match(TOKEN_EXTERN);
+			}
+			// If followed by struct/union, let the loop continue to parse the tag;
+			// otherwise break out to parse the primitive/typedef base type.
+			if (cur_tok.type != TOKEN_STRUCT && cur_tok.type != TOKEN_UNION) {
+				break;
+			}
 		}
 		else {
 			int is_u = (cur_tok.type == TOKEN_UNION);
@@ -681,7 +703,7 @@ ASTNode* parse_program(void) {
 				}
 			}
 			else {
-				// It is a global variable or function returning a struct/union: e.g. 'struct Packet g_pkt;'
+				// It is a global/extern/static variable or function using a struct/union tag
 				decl_type.kind = is_u ? TYPE_UNION : TYPE_STRUCT;
 				strcpy(decl_type.struct_name, tag_name);
 				ret_kind = decl_type.kind;
@@ -697,19 +719,13 @@ ASTNode* parse_program(void) {
 			return create_node(AST_PROGRAM);
 		}
 
-		if (cur_tok.type != TOKEN_STATIC && !is_type_name(cur_tok) && cur_tok.type != TOKEN_VOID) {
+		if (!is_type_name(cur_tok) && cur_tok.type != TOKEN_VOID) {
 			ASTNode* eof_node = create_node(AST_PROGRAM);
 			cur_tok.type = TOKEN_EOF;
 			return eof_node;
 		}
 
-		// 4. Check for optional file-scope 'static' storage-class specifier
-		if (cur_tok.type == TOKEN_STATIC) {
-			is_file_static = 1;
-			match(TOKEN_STATIC);
-		}
-
-		// 5. Parse the base type (void, int, float, char, struct/union, or typedef alias)
+		// 4. Parse the base type (void, int, float, char, struct/union, or typedef alias)
 		if (cur_tok.type == TOKEN_VOID) {
 			ret_kind = TYPE_INT;
 			decl_type.kind = TYPE_INT;
@@ -721,7 +737,7 @@ ASTNode* parse_program(void) {
 		}
 	}
 
-	// Parse pointer asterisks (e.g., int* global_ptr; or struct Packet* g_ptr;)
+	// 5. Parse pointer asterisks (e.g., int* global_ptr; or extern struct Packet* g_ptr;)
 	while (cur_tok.type == TOKEN_STAR) {
 		match(TOKEN_STAR);
 		DataType* base = (DataType*)calloc(1, sizeof(DataType));
@@ -738,9 +754,9 @@ ASTNode* parse_program(void) {
 	strcpy(name, cur_tok.lexeme);
 	match(TOKEN_IDENT);
 
-	// 7. BRANCH A: GLOBAL VARIABLE DECLARATION (not followed by '(')
+	// 7. BRANCH A: GLOBAL / STATIC / EXTERN VARIABLE DECLARATION (not followed by '(')
 	if (cur_tok.type != TOKEN_LPAREN) {
-		// Parse optional array dimensions (e.g., int g_arr[10]; or char g_chars[5];)
+		// Parse optional array dimensions (e.g., extern int g_arr[10]; or char g_chars[5];)
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
 			decl_type.is_array = 1;
@@ -749,12 +765,16 @@ ASTNode* parse_program(void) {
 			match(TOKEN_RBRACKET);
 		}
 
-		// Parse optional constant initializer (e.g., int g_x = -15; or float g_f = 3.5;)
+		// Parse optional constant initializer (disallowed on pure extern declarations)
 		int has_init = 0;
 		int init_int = 0;
 		double init_float = 0.0;
 
 		if (cur_tok.type == TOKEN_ASSIGN) {
+			if (is_file_extern) {
+				fprintf(stderr, "Semantic Error: Extern variable '%s' cannot have an initializer.\n", name);
+				exit(1);
+			}
 			match(TOKEN_ASSIGN);
 			has_init = 1;
 
@@ -782,7 +802,24 @@ ASTNode* parse_program(void) {
 
 		match(TOKEN_SEMI);
 
-		// Register the global/static variable in the persistent symbol table
+		// Avoid duplicate symbol entries if a header with 'extern int x;' is included multiple times
+		Symbol* existing = lookup_symbol(name);
+		if (existing && existing->is_global_var && existing->scope_level == 0) {
+			if (!is_file_extern && existing->is_extern) {
+				// Upgrade prior extern declaration to actual definition in this translation unit
+				existing->is_extern = 0;
+				existing->is_static = is_file_static;
+				existing->has_init = has_init;
+				existing->init_int = init_int;
+				existing->init_float = init_float;
+				existing->type = decl_type;
+			}
+			ASTNode* var_node = create_node(AST_VAR_DECL);
+			strcpy(var_node->name, name);
+			return var_node;
+		}
+
+		// Register the global/static/extern variable in the persistent symbol table
 		Symbol* g_sym = (Symbol*)calloc(1, sizeof(Symbol));
 		if (!g_sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 		strcpy(g_sym->name, name);
@@ -790,6 +827,7 @@ ASTNode* parse_program(void) {
 		g_sym->type = decl_type;
 		g_sym->is_local = 0;
 		g_sym->is_static = is_file_static;
+		g_sym->is_extern = is_file_extern;
 		g_sym->is_global_var = 1;
 		g_sym->has_init = has_init;
 		g_sym->init_int = init_int;
@@ -798,7 +836,7 @@ ASTNode* parse_program(void) {
 		g_sym->next = sym_table;
 		sym_table = g_sym;
 
-		// Return a variable declaration node (emitted later into .data by emit_global_variables())
+		// Return a variable declaration node (emitted later by emit_global_variables() or emit_external_declarations())
 		ASTNode* var_node = create_node(AST_VAR_DECL);
 		strcpy(var_node->name, name);
 		return var_node;
@@ -865,11 +903,18 @@ ASTNode* parse_program(void) {
 		void clear_local_symbols(void);
 		clear_local_symbols();
 
+		// Avoid duplicate extern entries if a prototype is declared more than once
+		Symbol* existing = lookup_symbol(name);
+		if (existing && !existing->is_global_var && !existing->is_local) {
+			return create_node(AST_VAR_DECL);
+		}
+
 		Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
 		if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 		strcpy(func_sym->name, name);
 		func_sym->type.kind = ret_kind;
 		func_sym->is_local = 0;
+		func_sym->is_static = is_file_static;
 		func_sym->is_extern = 1;
 		func_sym->is_variadic = is_var;
 		func_sym->next = sym_table;
@@ -879,16 +924,26 @@ ASTNode* parse_program(void) {
 	}
 
 	// 10. FUNCTION DEFINITION WITH BODY
-	Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
-	if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
-	strcpy(func_sym->name, name);
-	func_sym->type.kind = ret_kind;
-	func_sym->is_local = 0;
-	func_sym->is_static = is_file_static;
-	func_sym->is_extern = 0;
-	func_sym->is_variadic = is_var;
-	func_sym->next = sym_table;
-	sym_table = func_sym;
+	Symbol* existing = lookup_symbol(name);
+	if (existing && !existing->is_global_var && !existing->is_local) {
+		// Upgrade a prior forward declaration / extern prototype to a local definition
+		existing->is_extern = 0;
+		existing->is_static = is_file_static;
+		existing->type.kind = ret_kind;
+		existing->is_variadic = is_var;
+	}
+	else {
+		Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
+		if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
+		strcpy(func_sym->name, name);
+		func_sym->type.kind = ret_kind;
+		func_sym->is_local = 0;
+		func_sym->is_static = is_file_static;
+		func_sym->is_extern = 0;
+		func_sym->is_variadic = is_var;
+		func_sym->next = sym_table;
+		sym_table = func_sym;
+	}
 
 	ASTNode* n = create_node(AST_FUNC_DECL);
 	strcpy(n->name, name);

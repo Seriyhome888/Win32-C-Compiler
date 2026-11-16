@@ -36,7 +36,21 @@ void emit_external_declarations(void) {
 	printf("\n; --- DYNAMIC EXTERNAL SYMBOL REGISTRY --- \n");
 	while (sym) {
 		if (sym->is_extern) {
-			printf("extern %s:proc\n", sym->name);
+			if (!sym->is_global_var) {
+				printf("extern %s:proc\n", sym->name);
+			}
+			else if (sym->type.is_array || sym->type.kind == TYPE_STRUCT || sym->type.kind == TYPE_UNION) {
+				printf("extern %s:byte\n", sym->asm_label);
+			}
+			else if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL) {
+				printf("extern %s:byte\n", sym->asm_label);
+			}
+			else if (sym->type.kind == TYPE_FLOAT && sym->type.base_type == NULL) {
+				printf("extern %s:real4\n", sym->asm_label);
+			}
+			else {
+				printf("extern %s:dword\n", sym->asm_label);
+			}
 		}
 		sym = sym->next;
 	}
@@ -76,7 +90,7 @@ void emit_global_variables(void) {
 	Symbol* sym = sym_table;
 	int has_globals = 0;
 	while (sym) {
-		if (sym->is_global_var) { has_globals = 1; break; }
+		if (sym->is_global_var && !sym->is_extern) { has_globals = 1; break; }
 		sym = sym->next;
 	}
 	if (!has_globals) return;
@@ -84,7 +98,7 @@ void emit_global_variables(void) {
 	printf("\n.data\n");
 	sym = sym_table;
 	while (sym) {
-		if (sym->is_global_var) {
+		if (sym->is_global_var && !sym->is_extern) {
 			if (!sym->is_static) {
 				printf("PUBLIC %s\n", sym->asm_label);
 			}
@@ -117,7 +131,6 @@ static const char* reg_names_8[] = { "al", "cl", "dl" };
 
 // Track the current function's dynamic spilling offset allocation bounds
 static int spill_stack_offset = 0;
-#define MAX_SPILLS 64
 static int spill_offsets[3] = { 0 }; // Stores stack offset for each spilled register (-1 if not spilled)
 
 static int reg_map[3] = { 0 };
