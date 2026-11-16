@@ -5,3 +5,4 @@ del *.lib
 del *.exp
 del *.o
 del *.asm
+del *.pdb
