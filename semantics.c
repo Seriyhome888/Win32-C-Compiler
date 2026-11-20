@@ -20,6 +20,12 @@ int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type) 
 		return 1;
 	}
 
+	if (node->kind == AST_ARRAY_ACCESS) {
+		*total_offset = 0;
+		*out_type = node->type;
+		return 1;
+	}
+
 	if (node->kind == AST_MEMBER_ACCESS) {
 		DataType base_type;
 		int base_offset = 0;

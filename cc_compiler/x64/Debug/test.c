@@ -833,6 +833,120 @@ int test_inc_dec() {
 	return 1;
 }
 
+int test_pointer_arithmetic() {
+	printf("--- STARTING TYPED POINTER ARITHMETIC VERIFICATION ---\n");
+
+	// ==========================================
+	// 1. char* (1-byte stride)
+	// ==========================================
+	char c_arr[4];
+	c_arr[0] = 10;
+	c_arr[1] = 20;
+	c_arr[2] = 30;
+	c_arr[3] = 40;
+
+	char* cp1;
+	char* cp2;
+	cp1 = &c_arr[0];
+
+	cp2 = cp1 + 3;          // Advances by 3 * 1 = 3 bytes -> points to c_arr[3] (40)
+	if (*cp2 != 40 || (cp2 - cp1) != 3) {
+		printf("Test ptr (char* + / -) FAILED: *cp2=%d, diff=%d\n", *cp2, cp2 - cp1);
+		return 0;
+	}
+
+	cp2 = cp2 - 2;          // Steps back by 2 * 1 = 2 bytes -> points to c_arr[1] (20)
+	cp1++;                  // Postfix ++ advances by 1 byte -> points to c_arr[1] (20)
+	if (*cp1 != 20 || *cp2 != 20 || (cp1 - cp2) != 0) {
+		printf("Test ptr (char* ++ / -) FAILED: *cp1=%d, *cp2=%d\n", *cp1, *cp2);
+		return 0;
+	}
+
+	--cp2;                  // Prefix -- steps back by 1 byte -> points to c_arr[0] (10)
+	if (*cp2 != 10 || (cp1 - cp2) != 1) {
+		printf("Test ptr (char* --) FAILED: *cp2=%d, diff=%d\n", *cp2, cp1 - cp2);
+		return 0;
+	}
+
+	// ==========================================
+	// 2. int* (4-byte stride)
+	// ==========================================
+	int i_arr[5];
+	i_arr[0] = 100;
+	i_arr[1] = 200;
+	i_arr[2] = 300;
+	i_arr[3] = 400;
+	i_arr[4] = 500;
+
+	int* ip1;
+	int* ip2;
+	ip1 = &i_arr[0];
+
+	ip2 = ip1 + 4;          // Advances by 4 * 4 = 16 bytes -> points to i_arr[4] (500)
+	if (*ip2 != 500 || (ip2 - ip1) != 4) {
+		printf("Test ptr (int* + / -) FAILED: *ip2=%d, diff=%d\n", *ip2, ip2 - ip1);
+		return 0;
+	}
+
+	ip2 = ip2 - 2;          // Steps back by 2 * 4 = 8 bytes -> points to i_arr[2] (300)
+	ip1++;                  // Advances by 4 bytes -> points to i_arr[1] (200)
+	if (*ip1 != 200 || *ip2 != 300 || (ip2 - ip1) != 1) {
+		printf("Test ptr (int* ++ / -) FAILED: *ip1=%d, *ip2=%d, diff=%d\n", *ip1, *ip2, ip2 - ip1);
+		return 0;
+	}
+
+	--ip2;                  // Steps back by 4 bytes -> points to i_arr[1] (200)
+	if (*ip2 != 200 || (ip2 - ip1) != 0) {
+		printf("Test ptr (int* --) FAILED: *ip2=%d, diff=%d\n", *ip2, ip2 - ip1);
+		return 0;
+	}
+
+	// ==========================================
+	// 3. struct Packet* (10-byte stride, non-power-of-2 idiv test!)
+	// ==========================================
+	struct Packet pkts[3];
+	pkts[0].flag = 1;
+	pkts[0].payload = 1000;
+	pkts[0].weight = 1.5;
+
+	pkts[1].flag = 2;
+	pkts[1].payload = 2000;
+	pkts[1].weight = 2.5;
+
+	pkts[2].flag = 3;
+	pkts[2].payload = 3000;
+	pkts[2].weight = 3.5;
+
+	struct Packet* sp1;
+	struct Packet* sp2;
+	sp1 = &pkts[0];
+
+	sp2 = sp1 + 2;          // Advances by 2 * 10 = 20 bytes -> points to pkts[2]
+	if (sp2->payload != 3000 || sp2->flag != 3 || (sp2 - sp1) != 2) {
+		printf("Test ptr (struct Packet* + / -) FAILED: payload=%d, diff=%d\n",
+			sp2->payload, sp2 - sp1);
+		return 0;
+	}
+
+	sp1++;                  // Advances by 10 bytes -> points to pkts[1]
+	sp2 = sp2 - 1;          // Steps back by 10 bytes -> points to pkts[1]
+	if (sp1->payload != 2000 || sp2->payload != 2000 || (sp2 - sp1) != 0) {
+		printf("Test ptr (struct Packet* ++ / -) FAILED: sp1=%d, sp2=%d\n",
+			sp1->payload, sp2->payload);
+		return 0;
+	}
+
+	--sp2;                  // Steps back by 10 bytes -> points to pkts[0]
+	if (sp2->payload != 1000 || sp2->weight != 1.5 || (sp1 - sp2) != 1) {
+		printf("Test ptr (struct Packet* --) FAILED: payload=%d, diff=%d\n",
+			sp2->payload, sp1 - sp2);
+		return 0;
+	}
+
+	printf("Test Typed Pointer Arithmetic (char*, int*, struct Packet*) PASSED!\n");
+	return 1;
+}
+
 int main()
 {
 	int result;
@@ -969,6 +1083,7 @@ int main()
 	}
 
 	test_inc_dec();
+	test_pointer_arithmetic();
 
 	printf("--- STARTING REGRESSION & BUGFIX VERIFICATION ---\n");
 

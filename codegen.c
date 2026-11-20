@@ -397,6 +397,25 @@ static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 	node->type = val_type;
 }
 
+static int emit_dot_base_address(ASTNode* member_node, int* out_total_offset, DataType* out_type) {
+	ASTNode* root = member_node;
+	while (root && root->kind == AST_MEMBER_ACCESS) root = root->left;
+
+	if (root && root->kind == AST_ARRAY_ACCESS) {
+		// Compute address of array element (e.g., pkts[i]) + member offset
+		ASTNode* addr_node = create_node(AST_UNOP);
+		addr_node->op = TOKEN_AMP;
+		addr_node->left = root;
+		emit_code(addr_node);
+		int r_base = ensure_register_loaded(addr_node->int_val);
+		free(addr_node);
+
+		resolve_member_offset(member_node, out_total_offset, out_type);
+		return r_base;
+	}
+	return -1; // Standard variable/global struct handled directly via ebp/label
+}
+
 void emit_code(ASTNode* node) {
 	if (!node) return;
 
@@ -619,8 +638,8 @@ void emit_code(ASTNode* node) {
 						printf("    sar %s, 2\n", reg_names[rl]);
 					}
 					else if (stride > 1) {
-						int ext_eax = (reg_map && rl != 0 && rr != 0);
-						int ext_edx = (reg_map && rl != 2 && rr != 2);
+						int ext_eax = (reg_map[0] && rl != 0 && rr != 0);
+						int ext_edx = (reg_map[2] && rl != 2 && rr != 2);
 						if (ext_eax) printf("    push eax\n");
 						if (ext_edx) printf("    push edx\n");
 						if (rl != 0) printf("    mov eax, %s\n", reg_names[rl]);
@@ -799,7 +818,8 @@ void emit_code(ASTNode* node) {
 		node->int_val = -1; // Force uninitialized state to block downstream bugs
 
 		// Special Case: Address-of Reference Mapping (& optimization)
-		if (node->left->kind == AST_IDENT && node->right->kind == AST_UNOP && node->right->op == TOKEN_AMP) {
+		if (node->left->kind == AST_IDENT && node->right->kind == AST_UNOP && node->right->op == TOKEN_AMP &&
+			node->right->left->kind == AST_IDENT) {
 			Symbol* right_sym = lookup_symbol(node->right->left->name);
 			Symbol* left_sym = lookup_symbol(node->left->name);
 
@@ -893,7 +913,14 @@ void emit_code(ASTNode* node) {
 			int r_addr = addr_node->int_val;
 			r_addr = ensure_register_loaded(r_addr);
 
-			printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[rv]);
+			int is_char_deref = (node->left->type.kind == TYPE_CHAR &&
+				node->left->type.base_type == NULL && !node->left->type.is_array);
+			if (is_char_deref) {
+				printf("    mov byte ptr [%s], %s\n", reg_names[r_addr], reg_names_8[rv]);
+			}
+			else {
+				printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[rv]);
+			}
 			free_register(r_addr);
 		}
 		else if (node->left->kind == AST_MEMBER_ACCESS) {
@@ -916,38 +943,49 @@ void emit_code(ASTNode* node) {
 				free_register(r_ptr);
 			}
 			else {
-				ASTNode* root_id = node->left;
-				while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
-					root_id = root_id->left;
-				}
-				Symbol* struct_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
-
-				resolve_member_offset(node->left, &calculated_offset, &target_type);
-				is_char_member = (target_type.kind == TYPE_CHAR && target_type.base_type == NULL);
-
-				if (struct_sym && struct_sym->is_global_var) {
-					int member_disp = calculated_offset - struct_sym->offset;
-					if (is_char_member) {
-						printf("    mov byte ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names_8[rv]);
-					}
-					else {
-						printf("    mov dword ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names[rv]);
-					}
-				}
-				else if (calculated_offset < 0) {
-					if (is_char_member) {
-						printf("    mov byte ptr [ebp - %d], %s\n", -calculated_offset, reg_names_8[rv]);
-					}
-					else {
-						printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
-					}
+				int r_arr_base = emit_dot_base_address(node->left, &calculated_offset, &target_type);
+				if (r_arr_base != -1) {
+					is_char_member = (target_type.kind == TYPE_CHAR && target_type.base_type == NULL);
+					if (is_char_member)
+						printf("    mov byte ptr [%s + %d], %s\n", reg_names[r_arr_base], calculated_offset, reg_names_8[rv]);
+					else
+						printf("    mov dword ptr [%s + %d], %s\n", reg_names[r_arr_base], calculated_offset, reg_names[rv]);
+					free_register(r_arr_base);
 				}
 				else {
-					if (is_char_member) {
-						printf("    mov byte ptr [ebp + %d], %s\n", calculated_offset, reg_names_8[rv]);
+					ASTNode* root_id = node->left;
+					while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
+						root_id = root_id->left;
+					}
+					Symbol* struct_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+
+					resolve_member_offset(node->left, &calculated_offset, &target_type);
+					is_char_member = (target_type.kind == TYPE_CHAR && target_type.base_type == NULL);
+
+					if (struct_sym && struct_sym->is_global_var) {
+						int member_disp = calculated_offset - struct_sym->offset;
+						if (is_char_member) {
+							printf("    mov byte ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names_8[rv]);
+						}
+						else {
+							printf("    mov dword ptr [%s + %d], %s\n", struct_sym->asm_label, member_disp, reg_names[rv]);
+						}
+					}
+					else if (calculated_offset < 0) {
+						if (is_char_member) {
+							printf("    mov byte ptr [ebp - %d], %s\n", -calculated_offset, reg_names_8[rv]);
+						}
+						else {
+							printf("    mov dword ptr [ebp - %d], %s\n", -calculated_offset, reg_names[rv]);
+						}
 					}
 					else {
-						printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
+						if (is_char_member) {
+							printf("    mov byte ptr [ebp + %d], %s\n", calculated_offset, reg_names_8[rv]);
+						}
+						else {
+							printf("    mov dword ptr [ebp + %d], %s\n", calculated_offset, reg_names[rv]);
+						}
 					}
 				}
 			}
@@ -1026,7 +1064,7 @@ void emit_code(ASTNode* node) {
 		if (node->op == TOKEN_AMP) {
 			if (node->left->kind == AST_IDENT) {
 				Symbol* sym = lookup_symbol(node->left->name);
-				if (!sym) { printf("Semantic Error: %s undefined.\n", node->left->name); exit(1); }
+				if (!sym) { fprintf(stderr, "Semantic Error: %s undefined.\n", node->left->name); exit(1); }
 
 				if (sym->is_register) {
 					fprintf(stderr, "Semantic Error: Address of register variable '%s' requested.\n", sym->name);
@@ -1045,8 +1083,59 @@ void emit_code(ASTNode* node) {
 				}
 				node->int_val = r;
 			}
+			else if (node->left->kind == AST_ARRAY_ACCESS) {
+				ASTNode* base = node->left;
+				while (base->left && base->left->kind == AST_ARRAY_ACCESS) base = base->left;
+
+				Symbol* sym = lookup_symbol(base->left->name);
+				if (!sym) { fprintf(stderr, "Backend Error: Array '%s' not found.\n", base->left->name); exit(1); }
+
+				int dim = 0, r_off = -1;
+				compile_array_offset(node->left, &dim, sym, &r_off);
+				r_off = ensure_register_loaded(r_off);
+
+				int elem_size = get_array_element_size(sym->type);
+				if (elem_size == 4) printf("    shl %s, 2\n", reg_names[r_off]);
+				else if (elem_size != 1) printf("    imul %s, %d\n", reg_names[r_off], elem_size);
+
+				int r_ad = allocate_register();
+				if (sym->is_global_var) printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
+				else if (sym->offset < 0) printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
+				else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
+
+				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
+				free_register(r_off);
+				node->int_val = r_ad;
+			}
+			else if (node->left->kind == AST_MEMBER_ACCESS) {
+				DataType target_type;
+				int calc_off = 0;
+				resolve_member_offset(node->left, &calc_off, &target_type);
+
+				int r = allocate_register();
+				if (node->left->op == TOKEN_ARROW) {
+					emit_code(node->left->left);
+					int r_ptr = ensure_register_loaded(node->left->left->int_val);
+					printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_ptr], calc_off);
+					free_register(r_ptr);
+				}
+				else {
+					ASTNode* root_id = node->left;
+					while (root_id && root_id->kind == AST_MEMBER_ACCESS) root_id = root_id->left;
+					Symbol* s_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+
+					if (s_sym && s_sym->is_global_var)
+						printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r], s_sym->asm_label, calc_off - s_sym->offset);
+					else if (calc_off < 0)
+						printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -calc_off);
+					else
+						printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], calc_off);
+				}
+				node->int_val = r;
+			}
 			else {
-				printf("Backend Error: Lvalue required.\n"); exit(1);
+				fprintf(stderr, "Backend Error: Lvalue required for '&'.\n");
+				exit(1);
 			}
 			break;
 		}
@@ -1097,7 +1186,12 @@ void emit_code(ASTNode* node) {
 			int r = allocate_register();
 			int r_addr = ensure_register_loaded(rl);
 
-			printf("    mov %s, dword ptr [%s]\n", reg_names[r], reg_names[r_addr]);
+			if (node->type.kind == TYPE_CHAR && node->type.base_type == NULL && !node->type.is_array) {
+				printf("    movzx %s, byte ptr [%s]\n", reg_names[r], reg_names[r_addr]);
+			}
+			else {
+				printf("    mov %s, dword ptr [%s]\n", reg_names[r], reg_names[r_addr]);
+			}
 
 			free_register(r_addr);
 			node->int_val = r;
@@ -1424,37 +1518,49 @@ void emit_code(ASTNode* node) {
 			free_register(r_ptr);
 		}
 		else { // Dot Operator (.)
-			ASTNode* root_id = node;
-			while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
-				root_id = root_id->left;
+			int r_arr_base = emit_dot_base_address(node, &calculated_offset, &target_type);
+			if (r_arr_base != -1) {
+				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL)
+					printf("    movzx %s, byte ptr [%s + %d]\n", reg_names[r], reg_names[r_arr_base], calculated_offset);
+				else
+					printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_arr_base], calculated_offset);
+				free_register(r_arr_base);
 			}
-			Symbol* struct_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
 
-			resolve_member_offset(node, &calculated_offset, &target_type);
-
-			if (struct_sym && struct_sym->is_global_var) {
-				int member_disp = calculated_offset - struct_sym->offset;
-				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
-					printf("    movzx %s, byte ptr [%s + %d]\n", reg_names[r], struct_sym->asm_label, member_disp);
-				}
-				else {
-					printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], struct_sym->asm_label, member_disp);
-				}
-			}
-			else if (calculated_offset < 0) {
-				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
-					printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
-				}
-				else {
-					printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
-				}
-			}
 			else {
-				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
-					printf("    movzx %s, byte ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+
+				ASTNode* root_id = node;
+				while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
+					root_id = root_id->left;
+				}
+				Symbol* struct_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+
+				resolve_member_offset(node, &calculated_offset, &target_type);
+
+				if (struct_sym && struct_sym->is_global_var) {
+					int member_disp = calculated_offset - struct_sym->offset;
+					if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
+						printf("    movzx %s, byte ptr [%s + %d]\n", reg_names[r], struct_sym->asm_label, member_disp);
+					}
+					else {
+						printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], struct_sym->asm_label, member_disp);
+					}
+				}
+				else if (calculated_offset < 0) {
+					if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
+						printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
+					}
+					else {
+						printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[r], -calculated_offset);
+					}
 				}
 				else {
-					printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+					if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
+						printf("    movzx %s, byte ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+					}
+					else {
+						printf("    mov %s, dword ptr [ebp + %d]\n", reg_names[r], calculated_offset);
+					}
 				}
 			}
 		}
