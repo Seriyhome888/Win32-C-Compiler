@@ -64,6 +64,41 @@ static void flush_oldest(FILE* out_file) {
 	}
 }
 
+static int is_label_or_directive(const char* clean) {
+	if (clean[0] == '\0') return 0;
+	if (clean[0] == ';') return 0; // Comment line
+	if (clean[0] == '.') return 1; // Segment directive (.code, .data)
+	// Check for label definition (e.g., "$$L0:") before any comment
+	const char* colon = strchr(clean, ':');
+	const char* semi = strchr(clean, ';');
+	if (colon != NULL && (semi == NULL || colon < semi)) {
+		return 1;
+	}
+	if (strstr(clean, " proc") != NULL || strstr(clean, " endp") != NULL) {
+		return 1;
+	}
+	return 0;
+}
+
+static int is_safe_static_or_stack_mem(const char* mem, const char* reg) {
+	// Never fold if the memory operand depends on the register being overwritten (e.g., mov [eax], eax; mov eax, [eax])
+	if (strstr(mem, reg) != NULL) {
+		return 0;
+	}
+	// Only fold stack-frame ([ebp - N] / [ebp + N]) or direct symbol ([label]) memory operands
+	if (strstr(mem, "[ebp") != NULL) {
+		return 1;
+	}
+	if (strchr(mem, '[') != NULL &&
+		strstr(mem, "eax") == NULL &&
+		strstr(mem, "ecx") == NULL &&
+		strstr(mem, "edx") == NULL &&
+		strstr(mem, "esp") == NULL) {
+		return 1;
+	}
+	return 0;
+}
+
 void optimize_and_emit(FILE* out_file, const char* raw_line) {
 	char clean[MAX_LINE] = { 0 };
 	clean_line(clean, raw_line);
@@ -84,13 +119,29 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 		}
 	}
 
+	// 2. BARRIER: Flush existing window before emitting a referenced label or procedure boundary
+	// so peephole rules NEVER merge instructions across a jump target!
+	if (is_label_or_directive(clean)) {
+		while (window_count > 0) {
+			flush_oldest(out_file);
+		}
+		fprintf(out_file, "%s\n", raw_line);
+		return;
+	}
+
+	// Ignore pure comment lines from entering the sliding window so they don't break adjacency
+	if (clean[0] == ';') {
+		fprintf(out_file, "%s\n", raw_line);
+		return;
+	}
+
 	if (window_count >= WINDOW_SIZE) {
 		flush_oldest(out_file);
 	}
 
 	strcpy(window[window_count++], raw_line);
 
-	// 2. PASS: Apply FIFO pattern reductions over active slots
+	// 3. PASS: Apply FIFO pattern reductions strictly within the same basic block
 	while (1) {
 		if (window_count >= 1) {
 			char c0[MAX_LINE] = { 0 };
@@ -113,12 +164,17 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 			clean_line(c0, window[window_count - 2]);
 			clean_line(c1, window[window_count - 1]);
 
-			// Rule 2: Redundant Spill/Reload Cleanups (mov [mem], eax; mov eax, [mem])
+			// Rule 2: Redundant Store/Reload Cleanup (mov [mem], reg; mov reg, [mem])
 			char src_reg[16], dest_mem[64], dest_reg[16], src_mem[64];
 			if (sscanf(c0, "mov %63[^,], %15s", dest_mem, src_reg) == 2 &&
 				sscanf(c1, "mov %15[^,], %63s", dest_reg, src_mem) == 2) {
-				if (strcmp(src_reg, dest_reg) == 0 && strcmp(dest_mem, src_mem) == 0) {
-					// Drop c1 out of the tracking matrix safely
+				// Trim trailing whitespace on dest_mem
+				size_t mlen = strlen(dest_mem);
+				while (mlen > 0 && isspace((unsigned char)dest_mem[mlen - 1])) dest_mem[--mlen] = '\0';
+
+				if (strcmp(src_reg, dest_reg) == 0 &&
+					strcmp(dest_mem, src_mem) == 0 &&
+					is_safe_static_or_stack_mem(dest_mem, src_reg)) {
 					memset(window[window_count - 1], 0, MAX_LINE);
 					window_count--;
 					continue;
@@ -128,22 +184,6 @@ void optimize_and_emit(FILE* out_file, const char* raw_line) {
 			// Rule 3: Dead Unconditional Jump Stripping (jmp L1; jmp L2)
 			char jmp1[64], jmp2[64];
 			if (sscanf(c0, "jmp %63s", jmp1) == 1 && sscanf(c1, "jmp %63s", jmp2) == 1) {
-				memset(window[window_count - 1], 0, MAX_LINE);
-				window_count--;
-				continue;
-			}
-		}
-
-		if (window_count >= 3) {
-			char c0[MAX_LINE] = { 0 };
-			char c1[MAX_LINE] = { 0 };
-			char c2[MAX_LINE] = { 0 };
-			clean_line(c0, window[window_count - 3]);
-			clean_line(c1, window[window_count - 2]);
-			clean_line(c2, window[window_count - 1]);
-
-			// Rule 4: Segment Marker Deduping
-			if (strcmp(c0, ".code") == 0 && strcmp(c2, ".code") == 0) {
 				memset(window[window_count - 1], 0, MAX_LINE);
 				window_count--;
 				continue;
