@@ -261,6 +261,16 @@ int ensure_register_loaded(int r) {
 	return r;
 }
 
+static int get_pointer_stride(DataType type) {
+	if (type.kind == TYPE_POINTER && type.base_type != NULL) {
+		return get_type_size(*(type.base_type));
+	}
+	if (type.is_array) {
+		return get_array_element_size(type);
+	}
+	return 1;
+}
+
 static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 	ASTNode* target = node->left;
 	int r_addr = allocate_register();
@@ -300,11 +310,16 @@ static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 
 		printf("    add %s, %s\n", reg_names[r_addr], reg_names[r_off]);
 		free_register(r_off);
+
+		// Derive the dereferenced element type so pointers inside arrays (e.g., int* arr[4]; arr[0]++;) scale properly
+		val_type = sym->type;
+		val_type.is_array = 0;
+		val_type.dim_count = 0;
 	}
 	else if (target->kind == AST_MEMBER_ACCESS) {
 		int calc_off = 0;
 		resolve_member_offset(target, &calc_off, &val_type);
-		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL);
+		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
 
 		if (target->op == TOKEN_ARROW) {
 			emit_code(target->left);
@@ -330,7 +345,11 @@ static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 		int r_ptr = ensure_register_loaded(target->left->int_val);
 		printf("    mov %s, %s\n", reg_names[r_addr], reg_names[r_ptr]);
 		free_register(r_ptr);
-		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL);
+
+		if (target->left->type.kind == TYPE_POINTER && target->left->type.base_type != NULL) {
+			val_type = *(target->left->type.base_type);
+		}
+		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
 	}
 	else {
 		fprintf(stderr, "Semantic Error: Lvalue required for ++/--.\n");
@@ -351,6 +370,12 @@ static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 		printf("    mov %s, %s\n", reg_names[r_ret], reg_names[r_val]);
 	}
 
+	// 3. Apply typed pointer stride scaling (sizeof(*ptr)) or scalar +1 / -1
+	int stride = 1;
+	if (val_type.kind == TYPE_POINTER || val_type.base_type != NULL) {
+		stride = get_pointer_stride(val_type);
+	}
+
 	if (val_type.kind == TYPE_FLOAT && val_type.base_type == NULL) {
 		int lbl = gen_label();
 		printf("    .data\ninc_one_%d REAL4 1.0\n    .code\n", lbl);
@@ -359,7 +384,7 @@ static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 		printf("    movd %s, xmm0\n", reg_names[r_val]);
 	}
 	else {
-		printf("    %s %s, 1\n", is_inc ? "add" : "sub", reg_names[r_val]);
+		printf("    %s %s, %d\n", is_inc ? "add" : "sub", reg_names[r_val], stride);
 	}
 
 	if (is_byte) printf("    mov byte ptr [%s], %s\n", reg_names[r_addr], reg_names_8[r_val]);
@@ -474,7 +499,7 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_BINOP: {
-		// --- ARCHITECTURAL FIX: BALANCED SHORT-CIRCUIT BOOLEAN PIPELINE ---
+		// --- BALANCED SHORT-CIRCUIT BOOLEAN PIPELINE ---
 		if (node->op == TOKEN_LOGAND || node->op == TOKEN_LOGOR) {
 			int shortcut_label = gen_label();
 			int end_label = gen_label();
@@ -554,12 +579,25 @@ void emit_code(ASTNode* node) {
 
 		if (!is_float) {
 			// --- TYPE-AWARE BINARY OPERATION STRIDE ENGINE ---
-			int works_as_pointer = (node->left->type.kind == TYPE_POINTER || node->left->type.base_type != NULL ||
-				node->right->type.kind == TYPE_POINTER || node->right->type.base_type != NULL ||
+			int left_is_ptr = (node->left->type.kind == TYPE_POINTER || node->left->type.base_type != NULL || node->left->type.is_array);
+			int right_is_ptr = (node->right->type.kind == TYPE_POINTER || node->right->type.base_type != NULL || node->right->type.is_array);
+			int works_as_pointer = (left_is_ptr || right_is_ptr ||
 				node->type.kind == TYPE_POINTER || node->type.base_type != NULL);
 
 			if (node->op == TOKEN_PLUS) {
-				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
+				if (left_is_ptr && !right_is_ptr) {
+					int stride = get_pointer_stride(node->left->type);
+					if (stride == 4) printf("    shl %s, 2\n", reg_names[rr]);
+					else if (stride > 1) printf("    imul %s, %d\n", reg_names[rr], stride);
+					printf("    add %s, %s\n", reg_names[rl], reg_names[rr]);
+				}
+				else if (!left_is_ptr && right_is_ptr) {
+					int stride = get_pointer_stride(node->right->type);
+					if (stride == 4) printf("    shl %s, 2\n", reg_names[rl]);
+					else if (stride > 1) printf("    imul %s, %d\n", reg_names[rl], stride);
+					printf("    add %s, %s\n", reg_names[rl], reg_names[rr]);
+				}
+				else if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
 					printf("    add %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
 				}
 				else {
@@ -567,7 +605,34 @@ void emit_code(ASTNode* node) {
 				}
 			}
 			else if (node->op == TOKEN_MINUS) {
-				if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
+				if (left_is_ptr && !right_is_ptr) {
+					int stride = get_pointer_stride(node->left->type);
+					if (stride == 4) printf("    shl %s, 2\n", reg_names[rr]);
+					else if (stride > 1) printf("    imul %s, %d\n", reg_names[rr], stride);
+					printf("    sub %s, %s\n", reg_names[rl], reg_names[rr]);
+				}
+				else if (left_is_ptr && right_is_ptr) {
+					// Pointer difference: (ptr1 - ptr2) / sizeof(*ptr1)
+					printf("    sub %s, %s\n", reg_names[rl], reg_names[rr]);
+					int stride = get_pointer_stride(node->left->type);
+					if (stride == 4) {
+						printf("    sar %s, 2\n", reg_names[rl]);
+					}
+					else if (stride > 1) {
+						int ext_eax = (reg_map && rl != 0 && rr != 0);
+						int ext_edx = (reg_map && rl != 2 && rr != 2);
+						if (ext_eax) printf("    push eax\n");
+						if (ext_edx) printf("    push edx\n");
+						if (rl != 0) printf("    mov eax, %s\n", reg_names[rl]);
+						printf("    cdq\n");
+						printf("    mov ecx, %d\n", stride);
+						printf("    idiv ecx\n");
+						if (rl != 0) printf("    mov %s, eax\n", reg_names[rl]);
+						if (ext_edx) printf("    pop edx\n");
+						if (ext_eax) printf("    pop eax\n");
+					}
+				}
+				else if (node->type.kind == TYPE_CHAR && !works_as_pointer) {
 					printf("    sub %s, %s\n", get_safe_reg_name(rl, node->left->type), get_safe_reg_name(rr, node->right->type));
 				}
 				else {

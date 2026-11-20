@@ -445,11 +445,19 @@ ASTNode* parse_add(void) {
 		match(cur_tok.type);
 		parent->right = parse_mul();
 
-		// FIXED: Force underlying operand sub-trees to promote up explicitly
+		int left_is_ptr = (parent->left->type.kind == TYPE_POINTER || parent->left->type.base_type != NULL || parent->left->type.is_array);
+		int right_is_ptr = (parent->right->type.kind == TYPE_POINTER || parent->right->type.base_type != NULL || parent->right->type.is_array);
+
 		if (parent->left->type.kind == TYPE_FLOAT || parent->right->type.kind == TYPE_FLOAT) {
 			parent->left = ensure_float_node(parent->left);
 			parent->right = ensure_float_node(parent->right);
 			parent->type.kind = TYPE_FLOAT;
+		}
+		else if (left_is_ptr && !right_is_ptr) {
+			parent->type = parent->left->type;
+		}
+		else if (!left_is_ptr && right_is_ptr && parent->op == TOKEN_PLUS) {
+			parent->type = parent->right->type;
 		}
 		else {
 			parent->type.kind = TYPE_INT;
