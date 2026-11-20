@@ -708,6 +708,130 @@ int test_storage_classes(register int param_reg) {
 	return 0;
 }
 
+int test_inc_dec() {
+	printf("--- STARTING INCREMENT & DECREMENT (++/--) VERIFICATION ---\n");
+
+	// 1. Integers: prefix & postfix in expressions and standalone statements
+	int a;
+	int b;
+	int pre_inc;
+	int post_inc;
+	int pre_dec;
+	int post_dec;
+
+	a = 10;
+	pre_inc = ++a;   // a becomes 11, pre_inc = 11
+	post_inc = a++;  // post_inc = 11, a becomes 12
+
+	b = 20;
+	pre_dec = --b;   // b becomes 19, pre_dec = 19
+	post_dec = b--;  // post_dec = 19, b becomes 18
+
+	a++;             // standalone postfix: a becomes 13
+	--b;             // standalone prefix: b becomes 17
+
+	if (a != 13 || b != 17 || pre_inc != 11 || post_inc != 11 || pre_dec != 19 || post_dec != 19) {
+		printf("Test ++/-- (Int) FAILED: a=%d, b=%d, pre_inc=%d, post_inc=%d, pre_dec=%d, post_dec=%d\n",
+			a, b, pre_inc, post_inc, pre_dec, post_dec);
+		return 0;
+	}
+
+	// 2. Chars: verify 1-byte stores do not clobber adjacent variables
+	char c1;
+	char c2;
+	char c_post;
+	char c_pre;
+
+	c1 = 65;         // 'A'
+	c2 = 90;         // 'Z'
+	c_post = c1++;   // c_post = 65 ('A'), c1 becomes 66 ('B')
+	c_pre = --c2;    // c2 becomes 89 ('Y'), c_pre = 89 ('Y')
+
+	if (c1 != 66 || c2 != 89 || c_post != 65 || c_pre != 89) {
+		printf("Test ++/-- (Char) FAILED: c1=%d, c2=%d, c_post=%d, c_pre=%d\n",
+			c1, c2, c_post, c_pre);
+		return 0;
+	}
+
+	// 3. Floats: SSE2 +1.0 / -1.0 prefix & postfix
+	float f1;
+	float f_post;
+	float f_pre;
+
+	f1 = 2.5;
+	f_post = f1++;   // f_post = 2.5, f1 becomes 3.5
+	f_pre = --f1;    // f1 becomes 2.5, f_pre = 2.5
+	++f1;            // f1 becomes 3.5
+
+	if (f1 != 3.5 || f_post != 2.5 || f_pre != 2.5) {
+		printf("Test ++/-- (Float) FAILED: f1=%f, f_post=%f, f_pre=%f\n",
+			f1, f_post, f_pre);
+		return 0;
+	}
+
+	// 4. Arrays: 1D int array & char array element indexing
+	int arr[3];
+	arr[0] = 10;
+	arr[1] = 20;
+	arr[2] = 30;
+
+	int arr_post;
+	int arr_pre;
+	arr_post = arr[1]++; // arr_post = 20, arr[1] becomes 21
+	arr_pre = --arr[2];  // arr[2] becomes 29, arr_pre = 29
+
+	char carr[2];
+	carr[0] = 50;
+	carr[1] = 80;
+	carr[0]++;           // carr[0] becomes 51, must not clobber carr[1]
+	--carr[1];           // carr[1] becomes 79
+
+	if (arr[0] != 10 || arr[1] != 21 || arr[2] != 29 || arr_post != 20 || arr_pre != 29 ||
+		carr[0] != 51 || carr[1] != 79) {
+		printf("Test ++/-- (Arrays) FAILED: arr[1]=%d, arr[2]=%d, carr[0]=%d, carr[1]=%d\n",
+			arr[1], arr[2], carr[0], carr[1]);
+		return 0;
+	}
+
+	// 5. Struct members: dot (.) and pointer arrow (->) on int, char, and float fields
+	struct Packet pkt;
+	struct Packet* p_pkt;
+	p_pkt = &pkt;
+
+	pkt.flag = 10;
+	pkt.code = 20;
+	pkt.payload = 100;
+	pkt.weight = 4.5;
+
+	int s_post;
+	int s_pre;
+	s_post = pkt.payload++;     // s_post = 100, pkt.payload becomes 101
+	s_pre = --p_pkt->payload;   // pkt.payload becomes 100, s_pre = 100
+
+	pkt.flag++;                 // pkt.flag becomes 11 (must not clobber pkt.code)
+	--p_pkt->code;              // pkt.code becomes 19
+	p_pkt->weight++;            // pkt.weight becomes 5.5
+
+	if (pkt.flag != 11 || pkt.code != 19 || pkt.payload != 100 || pkt.weight != 5.5 ||
+		s_post != 100 || s_pre != 100) {
+		printf("Test ++/-- (Structs) FAILED: flag=%d, code=%d, payload=%d, weight=%f\n",
+			pkt.flag, pkt.code, pkt.payload, pkt.weight);
+		return 0;
+	}
+
+	// 6. Globals & Statics: verify .data label addressing
+	g_pkt.payload = 500;
+	g_pkt.payload++;
+	--g_pkt.payload;
+	if (g_pkt.payload != 500) {
+		printf("Test ++/-- (Global Struct) FAILED: payload=%d\n", g_pkt.payload);
+		return 0;
+	}
+
+	printf("Test ++/-- (Int, Char, Float, Array, Struct, Global) PASSED!\n");
+	return 1;
+}
+
 int main()
 {
 	int result;
@@ -842,6 +966,8 @@ int main()
 	else {
 		printf("Dynamic Variadic Test 2 (6 args) FAILED\n");
 	}
+
+	test_inc_dec();
 
 	printf("--- STARTING REGRESSION & BUGFIX VERIFICATION ---\n");
 

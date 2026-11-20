@@ -261,10 +261,126 @@ int ensure_register_loaded(int r) {
 	return r;
 }
 
+static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
+	ASTNode* target = node->left;
+	int r_addr = allocate_register();
+	DataType val_type = target->type;
+	int is_byte = 0;
+
+	// 1. Resolve target l-value memory address into r_addr
+	if (target->kind == AST_IDENT) {
+		Symbol* sym = lookup_symbol(target->name);
+		if (!sym) { fprintf(stderr, "Semantic Error: '%s' undefined.\n", target->name); exit(1); }
+		if (sym->is_register) { fprintf(stderr, "Semantic Error: Address of register '%s'.\n", sym->name); exit(1); }
+		val_type = sym->type;
+		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
+
+		if (sym->is_global_var) printf("    lea %s, dword ptr [%s]\n", reg_names[r_addr], sym->asm_label);
+		else if (sym->offset < 0) printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -sym->offset);
+		else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], sym->offset);
+	}
+	else if (target->kind == AST_ARRAY_ACCESS) {
+		ASTNode* base = target;
+		while (base->left && base->left->kind == AST_ARRAY_ACCESS) base = base->left;
+		Symbol* sym = lookup_symbol(base->left->name);
+		if (!sym) { fprintf(stderr, "Backend Error: Array not found.\n"); exit(1); }
+
+		int dim = 0, r_off = -1;
+		compile_array_offset(target, &dim, sym, &r_off);
+		r_off = ensure_register_loaded(r_off);
+
+		int elem_size = get_array_element_size(sym->type);
+		is_byte = (elem_size == 1);
+		if (elem_size == 4) printf("    shl %s, 2\n", reg_names[r_off]);
+		else if (elem_size != 1) printf("    imul %s, %d\n", reg_names[r_off], elem_size);
+
+		if (sym->is_global_var) printf("    lea %s, dword ptr [%s]\n", reg_names[r_addr], sym->asm_label);
+		else if (sym->offset < 0) printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -sym->offset);
+		else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], sym->offset);
+
+		printf("    add %s, %s\n", reg_names[r_addr], reg_names[r_off]);
+		free_register(r_off);
+	}
+	else if (target->kind == AST_MEMBER_ACCESS) {
+		int calc_off = 0;
+		resolve_member_offset(target, &calc_off, &val_type);
+		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL);
+
+		if (target->op == TOKEN_ARROW) {
+			emit_code(target->left);
+			int r_ptr = ensure_register_loaded(target->left->int_val);
+			printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r_addr], reg_names[r_ptr], calc_off);
+			free_register(r_ptr);
+		}
+		else {
+			ASTNode* root_id = target;
+			while (root_id && root_id->kind == AST_MEMBER_ACCESS) root_id = root_id->left;
+			Symbol* s_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+
+			if (s_sym && s_sym->is_global_var)
+				printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r_addr], s_sym->asm_label, calc_off - s_sym->offset);
+			else if (calc_off < 0)
+				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -calc_off);
+			else
+				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], calc_off);
+		}
+	}
+	else if (target->kind == AST_UNOP && target->op == TOKEN_STAR) {
+		emit_code(target->left);
+		int r_ptr = ensure_register_loaded(target->left->int_val);
+		printf("    mov %s, %s\n", reg_names[r_addr], reg_names[r_ptr]);
+		free_register(r_ptr);
+		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL);
+	}
+	else {
+		fprintf(stderr, "Semantic Error: Lvalue required for ++/--.\n");
+		exit(1);
+	}
+
+	// 2. Load current value, preserve old value if postfix, compute new value, and store back
+	int r_val = allocate_register();
+	r_addr = ensure_register_loaded(r_addr);
+
+	if (is_byte) printf("    movzx %s, byte ptr [%s]\n", reg_names[r_val], reg_names[r_addr]);
+	else printf("    mov %s, dword ptr [%s]\n", reg_names[r_val], reg_names[r_addr]);
+
+	int r_ret = is_postfix ? allocate_register() : r_val;
+	if (is_postfix) {
+		r_val = ensure_register_loaded(r_val);
+		r_addr = ensure_register_loaded(r_addr);
+		printf("    mov %s, %s\n", reg_names[r_ret], reg_names[r_val]);
+	}
+
+	if (val_type.kind == TYPE_FLOAT && val_type.base_type == NULL) {
+		int lbl = gen_label();
+		printf("    .data\ninc_one_%d REAL4 1.0\n    .code\n", lbl);
+		printf("    movd xmm0, %s\n", reg_names[r_val]);
+		printf("    %s xmm0, dword ptr [inc_one_%d]\n", is_inc ? "addss" : "subss", lbl);
+		printf("    movd %s, xmm0\n", reg_names[r_val]);
+	}
+	else {
+		printf("    %s %s, 1\n", is_inc ? "add" : "sub", reg_names[r_val]);
+	}
+
+	if (is_byte) printf("    mov byte ptr [%s], %s\n", reg_names[r_addr], reg_names_8[r_val]);
+	else printf("    mov dword ptr [%s], %s\n", reg_names[r_addr], reg_names[r_val]);
+
+	free_register(r_addr);
+	if (is_postfix) free_register(r_val);
+
+	node->int_val = r_ret;
+	node->type = val_type;
+}
+
 void emit_code(ASTNode* node) {
 	if (!node) return;
 
 	switch (node->kind) {
+	case AST_POST_INC:
+	case AST_POST_DEC: {
+		emit_inc_dec(node, node->kind == AST_POST_INC, 1);
+		break;
+	}
 
 	case AST_STRUCT_DECL:
 	case AST_UNION_DECL:
@@ -820,6 +936,11 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_UNOP: {
+		if (node->op == TOKEN_INC || node->op == TOKEN_DEC) {
+			emit_inc_dec(node, node->op == TOKEN_INC, 0);
+			break;
+		}
+
 		// Implicit floating-point promotion conversion node
 		if (node->op == TOKEN_FLOAT_LIT) {
 			emit_code(node->left);
@@ -995,7 +1116,9 @@ void emit_code(ASTNode* node) {
 
 			// Clean up and free tracking registers for standalone statement expressions
 			// to guarantee full register availability for subsequent code blocks.
-			if (s->kind == AST_CALL || s->kind == AST_BINOP || s->kind == AST_LITERAL || s->kind == AST_IDENT || s->kind == AST_ASSIGN) { // <-- Added AST_ASSIGN here!
+			if (s->kind == AST_CALL || s->kind == AST_BINOP || s->kind == AST_LITERAL ||
+				s->kind == AST_IDENT || s->kind == AST_ASSIGN || s->kind == AST_UNOP ||
+				s->kind == AST_POST_INC || s->kind == AST_POST_DEC) {
 				if (s->int_val >= 0 && s->int_val < 3) {
 					free_register(s->int_val);
 					s->int_val = -1;

@@ -236,8 +236,17 @@ ASTNode* parse_primary(void) {
 
 ASTNode* parse_postfix(void) {
 	ASTNode* n = parse_primary();
-	while (cur_tok.type == TOKEN_PERIOD || cur_tok.type == TOKEN_ARROW || cur_tok.type == TOKEN_LBRACKET) {
-		if (cur_tok.type == TOKEN_LBRACKET) {
+	while (cur_tok.type == TOKEN_PERIOD || cur_tok.type == TOKEN_ARROW || cur_tok.type == TOKEN_LBRACKET
+		|| cur_tok.type == TOKEN_INC || cur_tok.type == TOKEN_DEC) {
+		if (cur_tok.type == TOKEN_INC || cur_tok.type == TOKEN_DEC) {
+			ASTNode* post = create_node(cur_tok.type == TOKEN_INC ? AST_POST_INC : AST_POST_DEC);
+			post->op = cur_tok.type;
+			post->left = n;
+			post->type = n->type;
+			match(cur_tok.type);
+			n = post;
+		}
+		else if (cur_tok.type == TOKEN_LBRACKET) {
 			ASTNode* arr = create_node(AST_ARRAY_ACCESS); arr->left = n;
 			match(TOKEN_LBRACKET); arr->right = parse_expr(); match(TOKEN_RBRACKET);
 			n = arr;
@@ -266,7 +275,7 @@ static int is_cast_expression(void) {
 }
 
 ASTNode* parse_unary(void) {
-	// --- NEW: EXPLICIT TYPE CAST DETECTION ---
+	// --- EXPLICIT TYPE CAST DETECTION ---
 	// --- ENHANCED TYPE CAST DETECTION FOR VARIADIC SUPPORT ---
 	if (cur_tok.type == TOKEN_LPAREN) {
 		Token next_tok_peek = peek_next_token();
@@ -358,6 +367,15 @@ ASTNode* parse_unary(void) {
 		literal_node->int_val = size_result;
 
 		return literal_node;
+	}
+
+	if (cur_tok.type == TOKEN_INC || cur_tok.type == TOKEN_DEC) {
+		ASTNode* n = create_node(AST_UNOP);
+		n->op = cur_tok.type;
+		match(cur_tok.type);
+		n->left = parse_unary();
+		n->type = n->left->type;
+		return n;
 	}
 
 	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_MINUS || cur_tok.type == TOKEN_NOT) {

@@ -133,11 +133,14 @@ Token next_token(void) {
 	}
 
 	switch (ch) {
+
 	case '+':
 		ch = fgetc(src_file);
-		if (ch == '=') { tok.type = TOKEN_ADD_ASSIGN; ch = fgetc(src_file); }
+		if (ch == '+') { tok.type = TOKEN_INC; ch = fgetc(src_file); }
+		else if (ch == '=') { tok.type = TOKEN_ADD_ASSIGN; ch = fgetc(src_file); }
 		else { tok.type = TOKEN_PLUS; }
 		break;
+
 	case '*':
 		ch = fgetc(src_file);
 		if (ch == '=') { tok.type = TOKEN_MUL_ASSIGN; ch = fgetc(src_file); }
@@ -204,10 +207,12 @@ Token next_token(void) {
 
 	case '-':
 		ch = fgetc(src_file);
-		if (ch == '>') { tok.type = TOKEN_ARROW; ch = fgetc(src_file); }
-		else if (ch == '=') { tok.type = TOKEN_SUB_ASSIGN; ch = fgetc(src_file); } // <-- ADD THIS
+		if (ch == '-') { tok.type = TOKEN_DEC; ch = fgetc(src_file); }
+		else if (ch == '>') { tok.type = TOKEN_ARROW; ch = fgetc(src_file); }
+		else if (ch == '=') { tok.type = TOKEN_SUB_ASSIGN; ch = fgetc(src_file); }
 		else tok.type = TOKEN_MINUS;
 		break;
+
 	case '=':
 		ch = fgetc(src_file);
 		if (ch == '=') { tok.type = TOKEN_EQUAL; ch = fgetc(src_file); }
