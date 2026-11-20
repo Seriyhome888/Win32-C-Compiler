@@ -533,7 +533,8 @@ int sum_numbers(int count, ...) {
 	   Bypass casting: &count evaluates to a pointer.
 	   Compiler allows pointer + integer offset scaling out of the box!
 	*/
-	args = (char*)&count + 4;
+	//args = (char*)&count + 4;
+	args = &count + 1;
 
 	for (i = 0; i < count; i = i + 1) {
 		/*
