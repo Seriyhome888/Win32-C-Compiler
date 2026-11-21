@@ -420,6 +420,43 @@ void emit_code(ASTNode* node) {
 	if (!node) return;
 
 	switch (node->kind) {
+	case AST_TERNARY: {
+		int l_false = gen_label();
+		int l_end = gen_label();
+
+		// 1. Evaluate condition and branch
+		emit_code(node->cond);
+		int r_cond = ensure_register_loaded(node->cond->int_val);
+		printf("    cmp %s, 0\n", reg_names[r_cond]);
+		printf("    je $$L%d\n", l_false);
+		free_register(r_cond);
+
+		// Allocate a single stable destination register for both branches
+		int out_reg = allocate_register();
+
+		// 2. True branch
+		emit_code(node->left);
+		int r_true = ensure_register_loaded(node->left->int_val);
+		if (r_true != out_reg) {
+			printf("    mov %s, %s\n", reg_names[out_reg], reg_names[r_true]);
+		}
+		free_register(r_true);
+		printf("    jmp $$L%d\n", l_end);
+
+		// 3. False branch
+		printf("$$L%d:\n", l_false);
+		emit_code(node->right);
+		int r_false = ensure_register_loaded(node->right->int_val);
+		if (r_false != out_reg) {
+			printf("    mov %s, %s\n", reg_names[out_reg], reg_names[r_false]);
+		}
+		free_register(r_false);
+
+		printf("$$L%d:\n", l_end);
+		node->int_val = out_reg;
+		break;
+	}
+
 	case AST_POST_INC:
 	case AST_POST_DEC: {
 		emit_inc_dec(node, node->kind == AST_POST_INC, 1);
@@ -665,6 +702,38 @@ void emit_code(ASTNode* node) {
 				else {
 					printf("    imul %s, %s\n", reg_names[rl], reg_names[rr]);
 				}
+			}
+			else if (node->op == TOKEN_AMP) {
+				printf("    and %s, %s\n", reg_names[rl], reg_names[rr]);
+			}
+			else if (node->op == TOKEN_BITOR) {
+				printf("    or %s, %s\n", reg_names[rl], reg_names[rr]);
+			}
+			else if (node->op == TOKEN_BITXOR) {
+				printf("    xor %s, %s\n", reg_names[rl], reg_names[rr]);
+			}
+			else if (node->op == TOKEN_LSHIFT || node->op == TOKEN_RSHIFT) {
+				const char* shift_op = (node->op == TOKEN_LSHIFT) ? "shl" : "sar";
+				int save_ecx = (reg_map[1] && rl != 1 && rr != 1);
+
+				if (save_ecx) printf("    push ecx\n");
+
+				if (rl == 1) {
+					// Left operand is already in ecx: move it out before loading shift count into cl
+					int tmp_reg = (rr == 0) ? 2 : 0; // Use eax or edx temporarily
+					printf("    push %s\n", reg_names[tmp_reg]);
+					printf("    mov %s, ecx\n", reg_names[tmp_reg]);
+					printf("    mov ecx, %s\n", reg_names[rr]);
+					printf("    %s %s, cl\n", shift_op, reg_names[tmp_reg]);
+					printf("    mov ecx, %s\n", reg_names[tmp_reg]);
+					printf("    pop %s\n", reg_names[tmp_reg]);
+				}
+				else {
+					if (rr != 1) printf("    mov ecx, %s\n", reg_names[rr]);
+					printf("    %s %s, cl\n", shift_op, reg_names[rl]);
+				}
+
+				if (save_ecx) printf("    pop ecx\n");
 			}
 
 			// --- INTEGER DIVISION & MODULO PIPELINE ---
@@ -1237,6 +1306,12 @@ void emit_code(ASTNode* node) {
 			}
 			node->int_val = rl_loaded;
 		}
+		// --- BITWISE NOT (~) ENGINE ---
+		else if (node->op == TOKEN_BITNOT) {
+			int rl_loaded = ensure_register_loaded(rl);
+			printf("    not %s\n", reg_names[rl_loaded]);
+			node->int_val = rl_loaded;
+		}
 		break;
 	}
 
@@ -1277,7 +1352,7 @@ void emit_code(ASTNode* node) {
 			// to guarantee full register availability for subsequent code blocks.
 			if (s->kind == AST_CALL || s->kind == AST_BINOP || s->kind == AST_LITERAL ||
 				s->kind == AST_IDENT || s->kind == AST_ASSIGN || s->kind == AST_UNOP ||
-				s->kind == AST_POST_INC || s->kind == AST_POST_DEC) {
+				s->kind == AST_POST_INC || s->kind == AST_POST_DEC || s->kind == AST_TERNARY) {
 				if (s->int_val >= 0 && s->int_val < 3) {
 					free_register(s->int_val);
 					s->int_val = -1;

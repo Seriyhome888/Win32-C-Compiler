@@ -382,13 +382,14 @@ ASTNode* parse_unary(void) {
 		return n;
 	}
 
-	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_MINUS || cur_tok.type == TOKEN_NOT) {
+	if (cur_tok.type == TOKEN_AMP || cur_tok.type == TOKEN_STAR ||
+		cur_tok.type == TOKEN_MINUS || cur_tok.type == TOKEN_NOT ||
+		cur_tok.type == TOKEN_BITNOT) {
 		ASTNode* n = create_node(AST_UNOP);
 		n->op = cur_tok.type;
 		TokenType current_op = cur_tok.type;
 		match(cur_tok.type);
 
-		// Recursively parse the rest of the expression
 		n->left = parse_unary();
 
 		if (current_op == TOKEN_AMP) {
@@ -405,15 +406,15 @@ ASTNode* parse_unary(void) {
 			}
 		}
 		else if (current_op == TOKEN_MINUS) {
-			// Propagate the child node's type context (int or float) to the negation node
 			n->type = n->left->type;
 		}
-		else if (current_op == TOKEN_NOT) {
-			n->type.kind = TYPE_INT; // Results of logical evaluations are always integer booleans
+		else if (current_op == TOKEN_NOT || current_op == TOKEN_BITNOT) {
+			n->type.kind = TYPE_INT;
 		}
-		
+
 		return n;
 	}
+
 	return parse_postfix();
 }
 
@@ -471,8 +472,22 @@ ASTNode* parse_add(void) {
 	return n;
 }
 
-ASTNode* parse_relational(void) {
+ASTNode* parse_shift(void) {
 	ASTNode* n = parse_add();
+	while (cur_tok.type == TOKEN_LSHIFT || cur_tok.type == TOKEN_RSHIFT) {
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = cur_tok.type;
+		parent->left = n;
+		match(cur_tok.type);
+		parent->right = parse_add();
+		parent->type.kind = TYPE_INT;
+		n = parent;
+	}
+	return n;
+}
+
+ASTNode* parse_relational(void) {
+	ASTNode* n = parse_shift();
 	while (cur_tok.type == TOKEN_LESS || cur_tok.type == TOKEN_GREATER ||
 		cur_tok.type == TOKEN_LESS_EQUAL || cur_tok.type == TOKEN_GREATER_EQUAL ||
 		cur_tok.type == TOKEN_EQUAL || cur_tok.type == TOKEN_NOT_EQUAL) {
@@ -480,9 +495,8 @@ ASTNode* parse_relational(void) {
 		parent->op = cur_tok.type;
 		parent->left = n;
 		match(cur_tok.type);
-		parent->right = parse_add();
+		parent->right = parse_shift();
 
-		// Promote children to float if either operand is float, keeping boolean result as TYPE_INT
 		if (parent->left->type.kind == TYPE_FLOAT || parent->right->type.kind == TYPE_FLOAT) {
 			parent->left = ensure_float_node(parent->left);
 			parent->right = ensure_float_node(parent->right);
@@ -493,15 +507,57 @@ ASTNode* parse_relational(void) {
 	return n;
 }
 
-ASTNode* parse_log_and(void) {
+ASTNode* parse_bit_and(void) {
 	ASTNode* n = parse_relational();
+	while (cur_tok.type == TOKEN_AMP) {
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = TOKEN_AMP;
+		parent->left = n;
+		match(TOKEN_AMP);
+		parent->right = parse_relational();
+		parent->type.kind = TYPE_INT;
+		n = parent;
+	}
+	return n;
+}
+
+ASTNode* parse_bit_xor(void) {
+	ASTNode* n = parse_bit_and();
+	while (cur_tok.type == TOKEN_BITXOR) {
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = TOKEN_BITXOR;
+		parent->left = n;
+		match(TOKEN_BITXOR);
+		parent->right = parse_bit_and();
+		parent->type.kind = TYPE_INT;
+		n = parent;
+	}
+	return n;
+}
+
+ASTNode* parse_bit_or(void) {
+	ASTNode* n = parse_bit_xor();
+	while (cur_tok.type == TOKEN_BITOR) {
+		ASTNode* parent = create_node(AST_BINOP);
+		parent->op = TOKEN_BITOR;
+		parent->left = n;
+		match(TOKEN_BITOR);
+		parent->right = parse_bit_xor();
+		parent->type.kind = TYPE_INT;
+		n = parent;
+	}
+	return n;
+}
+
+ASTNode* parse_log_and(void) {
+	ASTNode* n = parse_bit_or();
 	while (cur_tok.type == TOKEN_LOGAND) {
 		ASTNode* parent = create_node(AST_BINOP);
 		parent->op = cur_tok.type;
 		parent->left = n;
 		match(TOKEN_LOGAND);
-		parent->right = parse_relational();
-		parent->type.kind = TYPE_INT; // Boolean evaluation result is an int
+		parent->right = parse_bit_or();
+		parent->type.kind = TYPE_INT;
 		n = parent;
 	}
 	return n;
@@ -515,18 +571,44 @@ ASTNode* parse_log_or(void) {
 		parent->left = n;
 		match(TOKEN_LOGOR);
 		parent->right = parse_log_and();
-		parent->type.kind = TYPE_INT; // Boolean evaluation result is an int
+		parent->type.kind = TYPE_INT;
 		n = parent;
 	}
 	return n;
 }
 
+ASTNode* parse_ternary(void) {
+	ASTNode* cond = parse_log_or();
+	if (cur_tok.type == TOKEN_QUESTION) {
+		match(TOKEN_QUESTION);
+		ASTNode* n = create_node(AST_TERNARY);
+		n->cond = cond;
+		n->left = parse_expr();       // True branch allows full expressions
+		match(TOKEN_COLON);
+		n->right = parse_ternary();   // Right-associative: a ? b : c ? d : e
+
+		if (n->left->type.kind == TYPE_FLOAT || n->right->type.kind == TYPE_FLOAT) {
+			n->left = ensure_float_node(n->left);
+			n->right = ensure_float_node(n->right);
+			n->type.kind = TYPE_FLOAT;
+		}
+		else {
+			n->type = n->left->type;
+		}
+		return n;
+	}
+	return cond;
+}
+
 ASTNode* parse_expr(void) {
-	ASTNode* n = parse_log_or();
+	ASTNode* n = parse_ternary();
 
 	if (cur_tok.type == TOKEN_ASSIGN || cur_tok.type == TOKEN_ADD_ASSIGN ||
 		cur_tok.type == TOKEN_SUB_ASSIGN || cur_tok.type == TOKEN_MUL_ASSIGN ||
-		cur_tok.type == TOKEN_DIV_ASSIGN) {
+		cur_tok.type == TOKEN_DIV_ASSIGN || cur_tok.type == TOKEN_MOD_ASSIGN ||
+		cur_tok.type == TOKEN_AND_ASSIGN || cur_tok.type == TOKEN_OR_ASSIGN ||
+		cur_tok.type == TOKEN_XOR_ASSIGN || cur_tok.type == TOKEN_LSHIFT_ASSIGN ||
+		cur_tok.type == TOKEN_RSHIFT_ASSIGN) {
 
 		TokenType op_type = cur_tok.type;
 		match(op_type);
@@ -539,31 +621,31 @@ ASTNode* parse_expr(void) {
 			assignment_node->right = right_expr;
 		}
 		else {
-			// --- DESUGARING TRANSFORMATION ---
-			// Maps: Variable [Op]= Expression  ->  Variable = Variable [Op] Expression
 			ASTNode* math_node = create_node(AST_BINOP);
 
 			if (op_type == TOKEN_ADD_ASSIGN) math_node->op = TOKEN_PLUS;
 			else if (op_type == TOKEN_SUB_ASSIGN) math_node->op = TOKEN_MINUS;
 			else if (op_type == TOKEN_MUL_ASSIGN) math_node->op = TOKEN_STAR;
 			else if (op_type == TOKEN_DIV_ASSIGN) math_node->op = TOKEN_SLASH;
+			else if (op_type == TOKEN_MOD_ASSIGN) math_node->op = TOKEN_PERCENT;
+			else if (op_type == TOKEN_AND_ASSIGN) math_node->op = TOKEN_AMP;
+			else if (op_type == TOKEN_OR_ASSIGN) math_node->op = TOKEN_BITOR;
+			else if (op_type == TOKEN_XOR_ASSIGN) math_node->op = TOKEN_BITXOR;
+			else if (op_type == TOKEN_LSHIFT_ASSIGN) math_node->op = TOKEN_LSHIFT;
+			else if (op_type == TOKEN_RSHIFT_ASSIGN) math_node->op = TOKEN_RSHIFT;
 
 			math_node->left = n;
 			math_node->right = right_expr;
 
-			// --- FIXED POINTER-SAFE TYPE PROPAGATION ENGINE ---
 			if (math_node->left->type.kind == TYPE_FLOAT || math_node->right->type.kind == TYPE_FLOAT) {
-				extern ASTNode* ensure_float_node(ASTNode * node);
 				math_node->left = ensure_float_node(math_node->left);
 				math_node->right = ensure_float_node(math_node->right);
 				math_node->type.kind = TYPE_FLOAT;
 			}
 			else if (math_node->left->type.kind == TYPE_POINTER || math_node->left->type.base_type != NULL) {
-				// Inherit full pointer metadata cleanly from the target variable (e.g. ap)
 				math_node->type = math_node->left->type;
 			}
 			else if (math_node->right->type.kind == TYPE_POINTER || math_node->right->type.base_type != NULL) {
-				// Fallback variant inheritance
 				math_node->type = math_node->right->type;
 			}
 			else {

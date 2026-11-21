@@ -947,6 +947,68 @@ int test_pointer_arithmetic() {
 	return 1;
 }
 
+int test_bitwise_and_ternary() {
+	int a = 12; // 0b1100
+	int b = 10; // 0b1010
+
+	if ((a & b) != 8) {
+		printf("Bitwise AND (&) FAILED: expected 8, got %d\n", a & b);
+		return 0;
+	}
+	if ((a | b) != 14) {
+		printf("Bitwise OR (|) FAILED: expected 14, got %d\n", a | b);
+		return 0;
+	}
+	if ((a ^ b) != 6) {
+		printf("Bitwise XOR (^) FAILED: expected 6, got %d\n", a ^ b);
+		return 0;
+	}
+	if ((~0) != -1) {
+		printf("Bitwise NOT (~) FAILED: expected -1, got %d\n", ~0);
+		return 0;
+	}
+	if ((3 << 4) != 48) {
+		printf("Left Shift (<<) FAILED: expected 48, got %d\n", 3 << 4);
+		return 0;
+	}
+	if ((48 >> 2) != 12) {
+		printf("Right Shift (>>) FAILED: expected 12, got %d\n", 48 >> 2);
+		return 0;
+	}
+
+	// Verify precedence: & binds tighter than ^, which binds tighter than |
+	// 12 | 10 ^ 6 & 3  ->  12 | (10 ^ (6 & 3))  ->  12 | (10 ^ 2)  ->  12 | 8 = 12
+	int prec = 12 | 10 ^ 6 & 3;
+	if (prec != 12) {
+		printf("Bitwise Precedence FAILED: expected 12, got %d\n", prec);
+		return 0;
+	}
+
+	// Compound assignments
+	int flags = 1;
+	flags |= 4;      // 5
+	flags <<= 2;     // 20
+	flags ^= 6;      // 18
+	flags &= 10;     // 2
+	flags >>= 1;     // 1
+	if (flags != 1) {
+		printf("Bitwise Compound Assignments FAILED: expected 1, got %d\n", flags);
+		return 0;
+	}
+
+	// Ternary (including short-circuiting & nested right-associativity)
+	int zero = 0;
+	int safe = zero ? (10 / zero) : 42;
+	int nested = (a < b) ? 1 : (a == b) ? 2 : 3;
+	if (safe != 42 || nested != 3) {
+		printf("Ternary Operator (?:) FAILED: safe=%d (expected 42), nested=%d (expected 3)\n", safe, nested);
+		return 0;
+	}
+
+	printf("Bitwise & Ternary Operators PASSED!\n");
+	return 1;
+}
+
 int main()
 {
 	int result;
@@ -1084,6 +1146,7 @@ int main()
 
 	test_inc_dec();
 	test_pointer_arithmetic();
+	test_bitwise_and_ternary();
 
 	printf("--- STARTING REGRESSION & BUGFIX VERIFICATION ---\n");
 

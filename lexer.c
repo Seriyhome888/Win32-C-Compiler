@@ -146,7 +146,12 @@ Token next_token(void) {
 		if (ch == '=') { tok.type = TOKEN_MUL_ASSIGN; ch = fgetc(src_file); }
 		else { tok.type = TOKEN_STAR; }
 		break;
-	case '%': tok.type = TOKEN_PERCENT; ch = fgetc(src_file); break;
+
+	case '%':
+		ch = fgetc(src_file);
+		if (ch == '=') { tok.type = TOKEN_MOD_ASSIGN; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_PERCENT; }
+		break;
 
 	case '!':
 		ch = fgetc(src_file);
@@ -157,13 +162,33 @@ Token next_token(void) {
 	case '&':
 		ch = fgetc(src_file);
 		if (ch == '&') { tok.type = TOKEN_LOGAND; ch = fgetc(src_file); }
-		else { tok.type = TOKEN_AMP; } // Retains unary address-of / bitwise AND
+		else if (ch == '=') { tok.type = TOKEN_AND_ASSIGN; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_AMP; }
 		break;
+
 	case '|':
 		ch = fgetc(src_file);
 		if (ch == '|') { tok.type = TOKEN_LOGOR; ch = fgetc(src_file); }
-		else { fprintf(stderr, "Lexical Error: Raw bitwise '|' unsupported.\n"); exit(1); }
-	break;
+		else if (ch == '=') { tok.type = TOKEN_OR_ASSIGN; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_BITOR; }
+		break;
+
+	case '^':
+		ch = fgetc(src_file);
+		if (ch == '=') { tok.type = TOKEN_XOR_ASSIGN; ch = fgetc(src_file); }
+		else { tok.type = TOKEN_BITXOR; }
+		break;
+
+	case '~':
+		tok.type = TOKEN_BITNOT;
+		ch = fgetc(src_file);
+		break;
+
+	case '?':
+		tok.type = TOKEN_QUESTION;
+		ch = fgetc(src_file);
+		break;
+
 	case ':': tok.type = TOKEN_COLON; ch = fgetc(src_file); break;
 	case ';': tok.type = TOKEN_SEMI; ch = fgetc(src_file); break;
 	case ',': tok.type = TOKEN_COMMA; ch = fgetc(src_file); break;
@@ -196,12 +221,23 @@ Token next_token(void) {
 
 	case '<':
 		ch = fgetc(src_file);
-		if (ch == '=') { tok.type = TOKEN_LESS_EQUAL; ch = fgetc(src_file); }
+		if (ch == '<') {
+			ch = fgetc(src_file);
+			if (ch == '=') { tok.type = TOKEN_LSHIFT_ASSIGN; ch = fgetc(src_file); }
+			else { tok.type = TOKEN_LSHIFT; }
+		}
+		else if (ch == '=') { tok.type = TOKEN_LESS_EQUAL; ch = fgetc(src_file); }
 		else { tok.type = TOKEN_LESS; }
 		break;
+
 	case '>':
 		ch = fgetc(src_file);
-		if (ch == '=') { tok.type = TOKEN_GREATER_EQUAL; ch = fgetc(src_file); }
+		if (ch == '>') {
+			ch = fgetc(src_file);
+			if (ch == '=') { tok.type = TOKEN_RSHIFT_ASSIGN; ch = fgetc(src_file); }
+			else { tok.type = TOKEN_RSHIFT; }
+		}
+		else if (ch == '=') { tok.type = TOKEN_GREATER_EQUAL; ch = fgetc(src_file); }
 		else { tok.type = TOKEN_GREATER; }
 		break;
 
