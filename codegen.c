@@ -499,7 +499,7 @@ void emit_code(ASTNode* node) {
 
 	case AST_IDENT: {
 		Symbol* sym = lookup_symbol(node->name);
-		if (!sym) { printf("Semantic Error: '%s' unresolved.\n", node->name); exit(1); }
+		if (!sym) { fprintf(stderr, "Semantic Error: '%s' unresolved.\n", node->name); exit(1); }
 
 		int r = allocate_register();
 		node->type = sym->type;
@@ -842,7 +842,7 @@ void emit_code(ASTNode* node) {
 
 		Symbol* sym = lookup_symbol(base->left->name);
 		if (!sym) {
-			printf("\n; Backend Error: Array base identifier '%s' not found!\n", base->left->name);
+			fprintf(stderr, "\n; Backend Error: Array base identifier '%s' not found!\n", base->left->name);
 			exit(1);
 		}
 
@@ -898,7 +898,7 @@ void emit_code(ASTNode* node) {
 			Symbol* left_sym = lookup_symbol(node->left->name);
 
 			if (!right_sym || !left_sym) {
-				printf("Backend Error: Symbol resolution failure during reference mapping.\n");
+				fprintf(stderr, "Backend Error: Symbol resolution failure during reference mapping.\n");
 				exit(1);
 			}
 
@@ -941,7 +941,7 @@ void emit_code(ASTNode* node) {
 		if (node->left->kind == AST_IDENT) {
 			Symbol* sym = lookup_symbol(node->left->name);
 			if (!sym) {
-				printf("\n; Backend Error: Assignment target variable '%s' not found!\n", node->left->name);
+				fprintf(stderr, "\n; Backend Error: Assignment target variable '%s' not found!\n", node->left->name);
 				exit(1);
 			}
 
@@ -1069,7 +1069,7 @@ void emit_code(ASTNode* node) {
 			while (base->left && base->left->kind == AST_ARRAY_ACCESS) base = base->left;
 
 			Symbol* sym = lookup_symbol(base->left->name);
-			if (!sym) { printf("\n; Backend Error: Array not found!\n"); exit(1); }
+			if (!sym) { fprintf(stderr, "\n; Backend Error: Array not found!\n"); exit(1); }
 
 			int dim = 0, r_off = -1;
 			compile_array_offset(node->left, &dim, sym, &r_off);
