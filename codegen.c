@@ -624,13 +624,18 @@ void emit_code(ASTNode* node) {
 		emit_code(node->right);
 		int rr = node->right->int_val;
 
-		// 3. CRITICAL HOOK: Verify if our left register got spilled during the right child's generation pass!
-		// Protect 'rr' so un-spilling 'rl' never overwrites the right operand's register.
+		// 3. CRITICAL HOOK: Recover spilled operands safely without clobbering each other
+		if (rr >= 0 && rr < 3 && spill_offsets[rr] > 0) {
+			int saved_rl_state = (rl >= 0 && rl < 3) ? reg_map[rl] : 0;
+			if (rl >= 0 && rl < 3) reg_map[rl] = 1;
+			rr = ensure_register_loaded(rr);
+			if (rl >= 0 && rl < 3) reg_map[rl] = saved_rl_state;
+		}
 		if (rl >= 0 && rl < 3 && spill_offsets[rl] > 0) {
-			int saved_rr_state = reg_map[rr];
-			reg_map[rr] = 1;
+			int saved_rr_state = (rr >= 0 && rr < 3) ? reg_map[rr] : 0;
+			if (rr >= 0 && rr < 3) reg_map[rr] = 1;
 			rl = ensure_register_loaded(rl);
-			reg_map[rr] = saved_rr_state;
+			if (rr >= 0 && rr < 3) reg_map[rr] = saved_rr_state;
 		}
 
 		if (!is_float) {
@@ -1384,25 +1389,35 @@ void emit_code(ASTNode* node) {
 
 	case AST_FOR: {
 		int l_co = gen_label(), l_st = gen_label(), l_en = gen_label();
-		emit_code(node->left);
-		if (node->left && node->left->int_val >= 0) free_register(node->left->int_val);
+		if (node->left) {
+			emit_code(node->left);
+			if (node->left->int_val >= 0 && node->left->int_val < 3) {
+				free_register(node->left->int_val);
+			}
+		}
 
 		loop_stack[loop_stack_top++] = (LoopFrame){ l_st, l_en };
 		printf("$$L%d:\n", l_co);
 
-		// --- FIXED: Reset the scratch registers pool before evaluating loop iterations ---
+		// Reset the scratch registers pool before evaluating loop iterations
 		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
 
-		emit_code(node->cond);
-		int r_cond = node->cond->int_val;
-		printf("    cmp %s, 0\n    je $$L%d\n", reg_names[r_cond], l_en);
-		free_register(r_cond);
+		if (node->cond) {
+			emit_code(node->cond);
+			int r_cond = ensure_register_loaded(node->cond->int_val);
+			printf("    cmp %s, 0\n    je $$L%d\n", reg_names[r_cond], l_en);
+			free_register(r_cond);
+		}
 
 		emit_code(node->body);
 		printf("$$L%d:\n", l_st);
 
-		emit_code(node->right);
-		if (node->right && node->right->int_val >= 0) free_register(node->right->int_val);
+		if (node->right) {
+			emit_code(node->right);
+			if (node->right->int_val >= 0 && node->right->int_val < 3) {
+				free_register(node->right->int_val);
+			}
+		}
 
 		printf("    jmp $$L%d\n$$L%d:\n", l_co, l_en);
 		loop_stack_top--;

@@ -256,6 +256,24 @@ void free_preprocessor_table(void) {
 	macro_head = NULL;
 }
 
+static void strip_line_comments(char* line) {
+	int in_str = 0;
+	for (int i = 0; line[i] != '\0'; i++) {
+		if (line[i] == '"' && (i == 0 || line[i - 1] != '\\')) {
+			in_str = !in_str;
+		}
+		else if (!in_str && line[i] == '/' && line[i + 1] == '/') {
+			line[i] = '\0';
+			break;
+		}
+	}
+	// Trim trailing whitespace left behind after stripping comment
+	size_t len = strlen(line);
+	while (len > 0 && isspace((unsigned char)line[len - 1])) {
+		line[--len] = '\0';
+	}
+}
+
 // Forward declaration to allow recursive processing for nested file insertions (#include)
 void process_file_stream(FILE* src, FILE* out);
 
@@ -337,7 +355,11 @@ void process_file_stream(FILE* src, FILE* out) {
 
 			// 4. HANDLE ELSE
 			if (strcmp(directive, "else") == 0) {
-				if (if_stack_top == 0) exit(1);
+				if (if_stack_top == 0 || if_stack[if_stack_top - 1].else_seen) {
+					fprintf(stderr, "Preprocessor Error: Misplaced or duplicate #else.\n");
+					exit(1);
+				}
+				if_stack[if_stack_top - 1].else_seen = 1;
 				if_stack[if_stack_top - 1].condition_met = !if_stack[if_stack_top - 1].condition_met;
 				continue;
 			}

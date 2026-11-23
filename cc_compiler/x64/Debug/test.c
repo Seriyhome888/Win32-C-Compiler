@@ -1009,6 +1009,91 @@ int test_bitwise_and_ternary() {
 	return 1;
 }
 
+union DataWord {
+	int as_int;
+	float as_float;
+	char first_byte;
+};
+
+// 1. Test void return; (early exit and trailing return;)
+void early_void_return(int* out_flag, int trigger) {
+	if (trigger) {
+		*out_flag = 42;
+		return;
+	}
+	*out_flag = -1;
+	return;
+}
+
+// 2. Test union member access (. and ->), overlapping memory, and sizeof
+int test_union_ops() {
+	union DataWord u;
+	union DataWord* pu;
+	pu = &u;
+
+	// Write 0x41424344 ('A'=65, 'B'=66, 'C'=67, 'D'=68 in little-endian: 0x44 is LSB)
+	u.as_int = 1094861636; // 0x41424344 -> lowest byte is 0x44 (68)
+	if (u.first_byte != 68 || pu->as_int != 1094861636 || sizeof(union DataWord) != 4) {
+		printf("Union Test (Int/Byte Overlap) FAILED: byte=%d, size=%d\n",
+			u.first_byte, sizeof(union DataWord));
+		return 0;
+	}
+
+	// Overwrite same 4-byte storage via pointer arrow (->) as a float
+	pu->as_float = 6.5;
+	if (u.as_float != 6.5 || pu->as_float != 6.5) {
+		printf("Union Test (Float Arrow Write) FAILED: val=%f\n", u.as_float);
+		return 0;
+	}
+
+	printf("Union Test (. / -> / Overlap / sizeof) PASSED!\n");
+	return 1;
+}
+
+// 3. Test for (;;) and for (; cond; ) empty clauses
+int test_for_empty_clauses() {
+	// Case A: Infinite for (;;) with break and continue
+	int count;
+	int sum;
+	count = 0;
+	sum = 0;
+
+	for (;;) {
+		count++;
+		if (count == 3) {
+			continue;
+		}
+		if (count > 5) {
+			break;
+		}
+		sum += count; // 1 + 2 + 4 + 5 = 12
+	}
+
+	if (sum != 12 || count != 6) {
+		printf("For (;;) Test FAILED: sum=%d, count=%d\n", sum, count);
+		return 0;
+	}
+
+	// Case B: for (; cond; ) with omitted init and step
+	int i;
+	int prod;
+	i = 1;
+	prod = 1;
+
+	for (; i <= 4; ) {
+		prod *= i; // 1 * 2 * 3 * 4 = 24
+		i++;
+	}
+
+	if (prod != 24 || i != 5) {
+		printf("For (; cond; ) Test FAILED: prod=%d, i=%d\n", prod, i);
+		return 0;
+	}
+
+	printf("For (;; / ;cond;) Empty Clauses Test PASSED!\n");
+	return 1;
+}
+
 int main()
 {
 	int result;
@@ -1159,12 +1244,27 @@ int main()
 
 	passed += test_storage_classes(5);
 
-	if (passed == 5) {
-		printf("ALL 5 BUGFIX TESTS PASSED!\n");
+	// Verify void return;
+	int flag;
+	flag = 0;
+	early_void_return(&flag, 1);
+	if (flag == 42) {
+		printf("Void return; Test PASSED!\n");
+		passed += 1;
+	}
+	else {
+		printf("Void return; Test FAILED: flag=%d\n", flag);
+	}
+
+	passed += test_union_ops();
+	passed += test_for_empty_clauses();
+
+	if (passed == 8) {
+		printf("ALL 8 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 5 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 8 passed)\n", passed);
 		return 1;
 	}
 
