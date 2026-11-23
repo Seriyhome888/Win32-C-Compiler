@@ -1413,29 +1413,22 @@ void emit_code(ASTNode* node) {
 	case AST_CONTINUE: printf("    jmp $$L%d\n", loop_stack[loop_stack_top - 1].cond_lbl); break;
 
 	case AST_RETURN: {
-		emit_code(node->left);
-		int r_val = node->left->int_val;
+		if (node->left) {
+			emit_code(node->left);
+			int r_val = ensure_register_loaded(node->left->int_val);
 
-		if (node->left->type.kind == TYPE_FLOAT) {
-			printf("    sub esp, 4\n");
-			printf("    mov dword ptr [esp], %s\n", reg_names[r_val]);
-			printf("    fld dword ptr [esp]\n");
-			printf("    add esp, 4\n");
+			if (node->left->type.kind == TYPE_FLOAT) {
+				printf("    sub esp, 4\n");
+				printf("    mov dword ptr [esp], %s\n", reg_names[r_val]);
+				printf("    fld dword ptr [esp]\n");
+				printf("    add esp, 4\n");
+			}
+			else {
+				printf("    mov eax, %s\n", reg_names[r_val]);
+			}
+			free_register(r_val);
 		}
-		else {
-			printf("    mov eax, %s\n", reg_names[r_val]);
-		}
 
-		free_register(r_val);
-
-		// --- FIXED: Do not duplicate the epilogue. Jump straight to the unified exit point ---
-		// We can find the current function node context by walking up parent tree scopes, 
-		// or safely use our current label allocation metrics:
-		// Since your compiler processes code sequentially, we use the active tracked function frame.
-		// If you have a global current_func pointer, use it. Otherwise, look up the function's exit node:
-		extern int label_id;
-		// Instead of printing raw duplicates, jump to the exit label of the function frame:
-		// To match your architecture cleanly without global structural changes:
 		printf("    mov esp, ebp\n    pop ebp\n    ret\n");
 		break;
 	}

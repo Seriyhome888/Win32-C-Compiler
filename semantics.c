@@ -35,18 +35,19 @@ int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type) 
 			return 0;
 		}
 
-		// 2. Identify the target structure context name
+		// 2. Identify the target structure or union context name
 		char struct_context[64];
 		if (node->op == TOKEN_ARROW) {
-			if (base_type.kind != TYPE_POINTER || !base_type.base_type || base_type.base_type->kind != TYPE_STRUCT) {
-				fprintf(stderr, "Semantic Error: Arrow operator '->' used on a non-pointer type.\n");
+			if (base_type.kind != TYPE_POINTER || !base_type.base_type ||
+				(base_type.base_type->kind != TYPE_STRUCT && base_type.base_type->kind != TYPE_UNION)) {
+				fprintf(stderr, "Semantic Error: Arrow operator '->' used on a non-struct/union pointer.\n");
 				exit(1);
 			}
 			strcpy(struct_context, base_type.base_type->struct_name);
 		}
 		else { // TOKEN_PERIOD '.'
-			if (base_type.kind != TYPE_STRUCT) {
-				fprintf(stderr, "Semantic Error: Dot operator '.' used on a non-struct type.\n");
+			if (base_type.kind != TYPE_STRUCT && base_type.kind != TYPE_UNION) {
+				fprintf(stderr, "Semantic Error: Dot operator '.' used on a non-struct/union type.\n");
 				exit(1);
 			}
 			strcpy(struct_context, base_type.struct_name);

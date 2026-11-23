@@ -1363,7 +1363,13 @@ ASTNode* parse_stmt(void) {
 	if (cur_tok.type == TOKEN_BREAK) { ASTNode* n = create_node(AST_BREAK); match(TOKEN_BREAK); match(TOKEN_SEMI); return n; }
 	if (cur_tok.type == TOKEN_CONTINUE) { ASTNode* n = create_node(AST_CONTINUE); match(TOKEN_CONTINUE); match(TOKEN_SEMI); return n; }
 	if (cur_tok.type == TOKEN_RETURN) {
-		ASTNode* n = create_node(AST_RETURN); match(TOKEN_RETURN); n->left = parse_expr(); match(TOKEN_SEMI); return n;
+		ASTNode* n = create_node(AST_RETURN);
+		match(TOKEN_RETURN);
+		if (cur_tok.type != TOKEN_SEMI) {
+			n->left = parse_expr();
+		}
+		match(TOKEN_SEMI);
+		return n;
 	}
 
 	if (cur_tok.type == TOKEN_SWITCH) {
