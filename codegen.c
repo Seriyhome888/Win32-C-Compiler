@@ -1387,6 +1387,26 @@ void emit_code(ASTNode* node) {
 		break;
 	}
 
+	case AST_DO_WHILE: {
+		int l_body = gen_label(), l_cond = gen_label(), l_end = gen_label();
+		loop_stack[loop_stack_top++] = (LoopFrame){ l_cond, l_end };
+
+		printf("$$L%d:\n", l_body);
+		emit_code(node->body);
+
+		printf("$$L%d:\n", l_cond);
+		for (int i = 0; i < 3; i++) { reg_map[i] = 0; spill_offsets[i] = 0; }
+
+		emit_code(node->cond);
+		int r_cond = ensure_register_loaded(node->cond->int_val);
+		printf("    cmp %s, 0\n    jne $$L%d\n", reg_names[r_cond], l_body);
+		free_register(r_cond);
+
+		printf("$$L%d:\n", l_end);
+		loop_stack_top--;
+		break;
+	}
+
 	case AST_FOR: {
 		int l_co = gen_label(), l_st = gen_label(), l_en = gen_label();
 		if (node->left) {

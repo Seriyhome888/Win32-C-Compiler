@@ -1094,6 +1094,36 @@ int test_for_empty_clauses() {
 	return 1;
 }
 
+int do_while_test() {
+	// 1. False condition on entry: body must still execute once
+	int runs = 0;
+	int flag = 0;
+	do {
+		runs++;
+	} while (flag);
+
+	// 2. Loop with continue (jumps to condition check) and break
+	int i = 0;
+	int sum = 0;
+	do {
+		i++;
+		if (i == 3) {
+			continue; // Must jump to while (i < 6), NOT skip the condition!
+		}
+		if (i == 5) {
+			break;
+		}
+		sum += i; // 1 + 2 + 4 = 7
+	} while (i < 6);
+
+	if (runs == 1 && sum == 7 && i == 5) {
+		printf("Do-While (single-run, continue, break) PASSED!\n");
+		return 1;
+	}
+	printf("Do-While FAILED: runs=%d, sum=%d, i=%d\n", runs, sum, i);
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -1243,6 +1273,8 @@ int main()
 	passed += test_negative_floats();
 
 	passed += test_storage_classes(5);
+
+	do_while_test();
 
 	// Verify void return;
 	int flag;

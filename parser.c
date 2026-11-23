@@ -1355,6 +1355,19 @@ ASTNode* parse_stmt(void) {
 		ASTNode* n = create_node(AST_WHILE); match(TOKEN_WHILE); match(TOKEN_LPAREN);
 		n->cond = parse_expr(); match(TOKEN_RPAREN); n->body = parse_stmt(); return n;
 	}
+
+	if (cur_tok.type == TOKEN_DO) {
+		ASTNode* n = create_node(AST_DO_WHILE);
+		match(TOKEN_DO);
+		n->body = parse_stmt();
+		match(TOKEN_WHILE);
+		match(TOKEN_LPAREN);
+		n->cond = parse_expr();
+		match(TOKEN_RPAREN);
+		match(TOKEN_SEMI);
+		return n;
+	}
+
 	if (cur_tok.type == TOKEN_FOR) {
 		ASTNode* n = create_node(AST_FOR);
 		match(TOKEN_FOR);

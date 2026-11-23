@@ -91,6 +91,7 @@ Token next_token(void) {
 		if (strcmp(tok.lexeme, "if") == 0) tok.type = TOKEN_IF;
 		else if (strcmp(tok.lexeme, "else") == 0) tok.type = TOKEN_ELSE;
 		else if (strcmp(tok.lexeme, "while") == 0) tok.type = TOKEN_WHILE;
+		else if (strcmp(tok.lexeme, "do") == 0) tok.type = TOKEN_DO;
 		else if (strcmp(tok.lexeme, "for") == 0) tok.type = TOKEN_FOR;
 		else if (strcmp(tok.lexeme, "break") == 0) tok.type = TOKEN_BREAK;
 		else if (strcmp(tok.lexeme, "continue") == 0) tok.type = TOKEN_CONTINUE;
