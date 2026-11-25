@@ -39,12 +39,12 @@ typedef struct {
 } Token;
 
 typedef enum {
-	TYPE_INT, TYPE_FLOAT, TYPE_POINTER, TYPE_STRUCT, TYPE_UNION, TYPE_CHAR
+	TYPE_INT, TYPE_FLOAT, TYPE_POINTER, TYPE_STRUCT, TYPE_UNION, TYPE_CHAR, TYPE_FUNC
 } DataTypeKind;
 
 typedef struct DataType {
 	DataTypeKind kind;
-	struct DataType* base_type;
+	struct DataType* base_type;  // For TYPE_POINTER: pointee type; for TYPE_FUNC: return type
 	char struct_name[64];
 	int is_array;
 	int dimensions[8];
@@ -65,6 +65,7 @@ typedef enum {
 typedef struct ASTNode {
 	ASTNodeKind kind;
 	int op;
+	int is_indirect; // 1 = indirect call via expression in node->right, 0 = direct call by node->name
 	char name[512];
 	int int_val;
 	double float_val;
@@ -135,5 +136,7 @@ int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type);
 void emit_external_declarations(void);
 
 void emit_global_variables(void);
+
+DataType make_pointer_to(DataType target);
 
 #endif

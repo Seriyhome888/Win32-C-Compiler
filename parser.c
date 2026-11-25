@@ -77,6 +77,134 @@ static DataType parse_base_type(void) {
 	return vt;
 }
 
+DataType make_pointer_to(DataType target) {
+	DataType* base = (DataType*)calloc(1, sizeof(DataType));
+	if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+	*base = target;
+	DataType ptr;
+	memset(&ptr, 0, sizeof(ptr));
+	ptr.kind = TYPE_POINTER;
+	ptr.base_type = base;
+	return ptr;
+}
+
+static DataType make_func_returning(DataType ret_type) {
+	DataType* ret = (DataType*)calloc(1, sizeof(DataType));
+	if (!ret) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+	*ret = ret_type;
+	DataType fn;
+	memset(&fn, 0, sizeof(fn));
+	fn.kind = TYPE_FUNC;
+	fn.base_type = ret;
+	return fn;
+}
+
+// Consumes "(param_types...)" in a function pointer signature
+static void skip_func_ptr_params(void) {
+	match(TOKEN_LPAREN);
+	if (cur_tok.type == TOKEN_VOID && peek_next_token().type == TOKEN_RPAREN) {
+		match(TOKEN_VOID);
+		match(TOKEN_RPAREN);
+		return;
+	}
+	while (cur_tok.type != TOKEN_RPAREN && cur_tok.type != TOKEN_EOF) {
+		if (cur_tok.type == TOKEN_ELLIPSIS) {
+			match(TOKEN_ELLIPSIS);
+			break;
+		}
+		if (cur_tok.type == TOKEN_REGISTER) match(TOKEN_REGISTER);
+		parse_base_type();
+		while (cur_tok.type == TOKEN_STAR) match(TOKEN_STAR);
+		if (cur_tok.type == TOKEN_IDENT) match(TOKEN_IDENT);
+		while (cur_tok.type == TOKEN_LBRACKET) {
+			match(TOKEN_LBRACKET);
+			if (cur_tok.type == TOKEN_INT_LIT) match(TOKEN_INT_LIT);
+			match(TOKEN_RBRACKET);
+		}
+		if (cur_tok.type == TOKEN_COMMA) match(TOKEN_COMMA);
+	}
+	match(TOKEN_RPAREN);
+}
+
+// Parses standard declarators AND function pointer declarators: e.g. (*fp)(int, int) or (*ops[4])(int)
+static DataType parse_declarator(DataType base_type, char* out_name) {
+	while (cur_tok.type == TOKEN_STAR) {
+		match(TOKEN_STAR);
+		base_type = make_pointer_to(base_type);
+	}
+
+	// Check for function pointer grouping: (*name...)
+	if (cur_tok.type == TOKEN_LPAREN && peek_next_token().type == TOKEN_STAR) {
+		match(TOKEN_LPAREN);
+		int ptr_depth = 0;
+		while (cur_tok.type == TOKEN_STAR) {
+			match(TOKEN_STAR);
+			ptr_depth++;
+		}
+		strcpy(out_name, cur_tok.lexeme);
+		match(TOKEN_IDENT);
+
+		// Optional array on the function pointer itself: int (*ops[4])(int)
+		int arr_dims[8] = { 0 };
+		int arr_count = 0;
+		while (cur_tok.type == TOKEN_LBRACKET) {
+			match(TOKEN_LBRACKET);
+			arr_dims[arr_count++] = cur_tok.int_val;
+			match(TOKEN_INT_LIT);
+			match(TOKEN_RBRACKET);
+		}
+		match(TOKEN_RPAREN);
+
+		// Build TYPE_FUNC returning base_type, wrapped in pointer(s), then optional array
+		DataType full_type = make_func_returning(base_type);
+		for (int i = 0; i < ptr_depth; i++) {
+			full_type = make_pointer_to(full_type);
+		}
+		if (arr_count > 0) {
+			full_type.is_array = 1;
+			full_type.dim_count = arr_count;
+			for (int i = 0; i < arr_count; i++) full_type.dimensions[i] = arr_dims[i];
+		}
+
+		skip_func_ptr_params();
+		return full_type;
+	}
+
+	strcpy(out_name, cur_tok.lexeme);
+	match(TOKEN_IDENT);
+	return base_type;
+}
+
+// Parses abstract pointer and function-pointer suffixes (no identifier name):
+// e.g., "*", "**", "(*)(int, int)", "(**)(void)"
+static DataType parse_abstract_declarator(DataType base_type) {
+	while (cur_tok.type == TOKEN_STAR) {
+		match(TOKEN_STAR);
+		base_type = make_pointer_to(base_type);
+	}
+
+	// Check for abstract function pointer grouping: (*)(params...)
+	if (cur_tok.type == TOKEN_LPAREN && peek_next_token().type == TOKEN_STAR) {
+		match(TOKEN_LPAREN);
+		int ptr_depth = 0;
+		while (cur_tok.type == TOKEN_STAR) {
+			match(TOKEN_STAR);
+			ptr_depth++;
+		}
+		match(TOKEN_RPAREN);
+
+		DataType full_type = make_func_returning(base_type);
+		for (int i = 0; i < ptr_depth; i++) {
+			full_type = make_pointer_to(full_type);
+		}
+
+		skip_func_ptr_params();
+		return full_type;
+	}
+
+	return base_type;
+}
+
 static ASTNode* ensure_float_node(ASTNode* node) {
 	if (!node) return NULL;
 	if (node->type.kind == TYPE_INT || node->type.kind == TYPE_CHAR) {
@@ -196,21 +324,6 @@ ASTNode* parse_primary(void) {
 		strcpy(name, cur_tok.lexeme);
 		match(TOKEN_IDENT);
 
-		if (cur_tok.type == TOKEN_LPAREN) { // Function Call
-			match(TOKEN_LPAREN);
-			n = create_node(AST_CALL);
-			strcpy(n->name, name);
-			ASTNode** arg_tail = &(n->left);
-			while (cur_tok.type != TOKEN_RPAREN) {
-				*arg_tail = parse_expr();
-				(*arg_tail)->next = NULL;
-				arg_tail = &((*arg_tail)->next);
-				if (cur_tok.type == TOKEN_COMMA) match(TOKEN_COMMA);
-			}
-			match(TOKEN_RPAREN);
-			return n;
-		}
-
 		// FIXED: Create identifier node and completely clean type layout
 		n = create_node(AST_IDENT);
 		strcpy(n->name, name);
@@ -237,8 +350,46 @@ ASTNode* parse_primary(void) {
 ASTNode* parse_postfix(void) {
 	ASTNode* n = parse_primary();
 	while (cur_tok.type == TOKEN_PERIOD || cur_tok.type == TOKEN_ARROW || cur_tok.type == TOKEN_LBRACKET
-		|| cur_tok.type == TOKEN_INC || cur_tok.type == TOKEN_DEC) {
-		if (cur_tok.type == TOKEN_INC || cur_tok.type == TOKEN_DEC) {
+		|| cur_tok.type == TOKEN_INC || cur_tok.type == TOKEN_DEC || cur_tok.type == TOKEN_LPAREN) {
+
+		if (cur_tok.type == TOKEN_LPAREN) {
+			match(TOKEN_LPAREN);
+			ASTNode* call = create_node(AST_CALL);
+
+			// Unwrap explicit dereference syntax: (*fp)(args) -> evaluate fp as target address
+			ASTNode* callee = n;
+			if (callee->kind == AST_UNOP && callee->op == TOKEN_STAR) {
+				callee = callee->left;
+			}
+
+			// Direct call to a declared function symbol vs. indirect call through a pointer/expression
+			Symbol* fn_sym = (callee->kind == AST_IDENT) ? lookup_symbol(callee->name) : NULL;
+			if (fn_sym && fn_sym->type.kind == TYPE_FUNC) {
+				call->is_indirect = 0;
+				strcpy(call->name, callee->name);
+				if (fn_sym->type.base_type) call->type = *(fn_sym->type.base_type);
+			}
+			else {
+				call->is_indirect = 1;
+				call->right = callee;
+				// Extract return type from TYPE_POINTER -> TYPE_FUNC -> return_type
+				DataType t = callee->type;
+				while (t.kind == TYPE_POINTER && t.base_type) t = *(t.base_type);
+				if (t.kind == TYPE_FUNC && t.base_type) call->type = *(t.base_type);
+				else call->type.kind = TYPE_INT;
+			}
+
+			ASTNode** arg_tail = &(call->left);
+			while (cur_tok.type != TOKEN_RPAREN && cur_tok.type != TOKEN_EOF) {
+				*arg_tail = parse_expr();
+				(*arg_tail)->next = NULL;
+				arg_tail = &((*arg_tail)->next);
+				if (cur_tok.type == TOKEN_COMMA) match(TOKEN_COMMA);
+			}
+			match(TOKEN_RPAREN);
+			n = call;
+		}
+		else if (cur_tok.type == TOKEN_INC || cur_tok.type == TOKEN_DEC) {
 			ASTNode* post = create_node(cur_tok.type == TOKEN_INC ? AST_POST_INC : AST_POST_DEC);
 			post->op = cur_tok.type;
 			post->left = n;
@@ -279,24 +430,24 @@ static int is_cast_expression(void) {
 }
 
 ASTNode* parse_unary(void) {
-	// --- EXPLICIT TYPE CAST DETECTION ---
 	// --- ENHANCED TYPE CAST DETECTION FOR VARIADIC SUPPORT ---
+	// --- EXPLICIT TYPE CAST DETECTION ---
 	if (cur_tok.type == TOKEN_LPAREN) {
 		Token next_tok_peek = peek_next_token();
-		if (is_type_name(next_tok_peek)) {
+		if (is_type_name(next_tok_peek) || next_tok_peek.type == TOKEN_VOID) {
 			match(TOKEN_LPAREN);
-			DataType cast_type = parse_base_type();
-
-			// Correctly parse arbitrary pointer stars: e.g., (char*) or (int**)
-			while (cur_tok.type == TOKEN_STAR) {
-				match(TOKEN_STAR);
-				DataType* base = (DataType*)calloc(1, sizeof(DataType));
-				if (!base) { fprintf(stderr, "Out of memory.\n"); exit(1); }
-				*base = cast_type;
-				memset(&cast_type, 0, sizeof(cast_type));
-				cast_type.kind = TYPE_POINTER;
-				cast_type.base_type = base;
+			DataType cast_type;
+			memset(&cast_type, 0, sizeof(cast_type));
+			if (cur_tok.type == TOKEN_VOID) {
+				cast_type.kind = TYPE_INT;
+				match(TOKEN_VOID);
 			}
+			else {
+				cast_type = parse_base_type();
+			}
+
+			// Handles standard pointers (char*), double pointers (int**), AND function pointers (int (*)(int, int))
+			cast_type = parse_abstract_declarator(cast_type);
 			match(TOKEN_RPAREN);
 
 			// Construct the cast node
@@ -304,8 +455,6 @@ ASTNode* parse_unary(void) {
 			cast_node->op = TOKEN_TYPEDEF; // Cast marker
 			cast_node->type = cast_type;   // Target data type
 
-			// Crucial change: Parse recursively as a unary expression 
-			// so that *(type*)expr groups cleanly as *(AST_UNOP(type, expr))
 			cast_node->left = parse_unary();
 			cast_node->type = cast_type;
 			return cast_node;
@@ -680,23 +829,8 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 		DataType m_type = parse_base_type();
 
 		// 2. Parse pointer levels (e.g., char* name; or struct Node* next;)
-		while (cur_tok.type == TOKEN_STAR) {
-			match(TOKEN_STAR);
-			DataType* base = (DataType*)calloc(1, sizeof(DataType));
-			if (!base) {
-				fprintf(stderr, "Fatal Error: Out of memory during pointer member allocation.\n");
-				exit(1);
-			}
-			*base = m_type;
-			memset(&m_type, 0, sizeof(m_type));
-			m_type.kind = TYPE_POINTER;
-			m_type.base_type = base;
-		}
-
-		// 3. Extract the member name identifier
 		char m_name[64];
-		strcpy(m_name, cur_tok.lexeme);
-		match(TOKEN_IDENT);
+		m_type = parse_declarator(m_type, m_name);
 
 		// 4. Support fixed-size array members inside structs/unions
 		while (cur_tok.type == TOKEN_LBRACKET) {
@@ -856,22 +990,10 @@ ASTNode* parse_program(void) {
 		}
 	}
 
-	// 5. Parse pointer asterisks (e.g., int* global_ptr; or extern struct Packet* g_ptr;)
-	while (cur_tok.type == TOKEN_STAR) {
-		match(TOKEN_STAR);
-		DataType* base = (DataType*)calloc(1, sizeof(DataType));
-		if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
-		*base = decl_type;
-		memset(&decl_type, 0, sizeof(decl_type));
-		decl_type.kind = TYPE_POINTER;
-		decl_type.base_type = base;
-		ret_kind = TYPE_POINTER;
-	}
-
-	// 6. Capture the identifier name (global variable name or function name)
+	// 5 & 6. Parse pointer asterisks, function-pointer declarator (*name)(...), and identifier name
 	char name[64];
-	strcpy(name, cur_tok.lexeme);
-	match(TOKEN_IDENT);
+	decl_type = parse_declarator(decl_type, name);
+	ret_kind = decl_type.kind;
 
 	// 7. BRANCH A: GLOBAL / STATIC / EXTERN VARIABLE DECLARATION (not followed by '(')
 	if (cur_tok.type != TOKEN_LPAREN) {
@@ -991,20 +1113,8 @@ ASTNode* parse_program(void) {
 
 		DataType pt = parse_base_type();
 
-		// Check for pointer argument layers (e.g., char* message)
-		while (cur_tok.type == TOKEN_STAR) {
-			match(TOKEN_STAR);
-			DataType* base = (DataType*)calloc(1, sizeof(DataType));
-			if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
-			*base = pt;
-			memset(&pt, 0, sizeof(pt));
-			pt.kind = TYPE_POINTER;
-			pt.base_type = base;
-		}
-
 		char p_name[64];
-		strcpy(p_name, cur_tok.lexeme);
-		match(TOKEN_IDENT);
+		pt = parse_declarator(pt, p_name);
 
 		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
 		if (!sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
@@ -1025,6 +1135,9 @@ ASTNode* parse_program(void) {
 	}
 	match(TOKEN_RPAREN);
 
+	// Build function type wrapping its return type (decl_type)
+	DataType func_type = make_func_returning(decl_type);
+
 	// 9. CRITICAL HEADER PROTOTYPE LOOKAHEAD CHECK
 	if (cur_tok.type == TOKEN_SEMI) {
 		match(TOKEN_SEMI);
@@ -1042,7 +1155,7 @@ ASTNode* parse_program(void) {
 		Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
 		if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 		strcpy(func_sym->name, name);
-		func_sym->type.kind = ret_kind;
+		func_sym->type = func_type;
 		func_sym->is_local = 0;
 		func_sym->is_static = is_file_static;
 		func_sym->is_extern = 1;
@@ -1059,14 +1172,14 @@ ASTNode* parse_program(void) {
 		// Upgrade a prior forward declaration / extern prototype to a local definition
 		existing->is_extern = 0;
 		existing->is_static = is_file_static;
-		existing->type.kind = ret_kind;
+		existing->type = func_type;
 		existing->is_variadic = is_var;
 	}
 	else {
 		Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
 		if (!func_sym) { fprintf(stderr, "Out of memory.\n"); exit(1); }
 		strcpy(func_sym->name, name);
-		func_sym->type.kind = ret_kind;
+		func_sym->type = func_type;
 		func_sym->is_local = 0;
 		func_sym->is_static = is_file_static;
 		func_sym->is_extern = 0;
@@ -1097,20 +1210,8 @@ ASTNode* parse_stmt(void) {
 		// Parse the base type definition layer
 		DataType base_t = parse_base_type();
 
-		// Handle potential pointer symbols linked to the alias (e.g. typedef int* int_ptr;)
-		while (cur_tok.type == TOKEN_STAR) {
-			match(TOKEN_STAR);
-			DataType* p_base = (DataType*)calloc(1, sizeof(DataType));
-			*p_base = base_t;
-			memset(&base_t, 0, sizeof(base_t));
-			base_t.kind = TYPE_POINTER;
-			base_t.base_type = p_base;
-		}
-
-		// Capture new alias identifier name
 		char alias_name[64];
-		strcpy(alias_name, cur_tok.lexeme);
-		match(TOKEN_IDENT);
+		base_t = parse_declarator(base_t, alias_name);
 		match(TOKEN_SEMI);
 
 		// Register the new type entry inside the compiler symbol table
@@ -1149,19 +1250,8 @@ ASTNode* parse_stmt(void) {
 
 		DataType vt = parse_base_type();
 
-		while (cur_tok.type == TOKEN_STAR) {
-			match(TOKEN_STAR);
-			DataType* base = (DataType*)calloc(1, sizeof(DataType));
-			if (!base) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
-			*base = vt;
-			memset(&vt, 0, sizeof(vt));
-			vt.kind = TYPE_POINTER;
-			vt.base_type = base;
-		}
-
 		char name[64];
-		strcpy(name, cur_tok.lexeme);
-		match(TOKEN_IDENT);
+		vt = parse_declarator(vt, name);
 
 		// Block-scope function prototype: e.g., extern int helper(int x);
 		if (cur_tok.type == TOKEN_LPAREN) {
@@ -1202,6 +1292,11 @@ ASTNode* parse_stmt(void) {
 		}
 
 		int total = 1;
+
+		if (vt.is_array) {
+			for (int i = 0; i < vt.dim_count; i++) total *= vt.dimensions[i];
+		}
+
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
 			vt.is_array = 1;
@@ -1447,6 +1542,12 @@ struct StructEnv* lookup_struct(const char* name) {
 int get_type_size(DataType type) {
 	// If it's a pointer type, it's always 4 bytes in a 32-bit x86 architecture
 	if (type.kind == TYPE_POINTER || type.base_type != NULL) {
+		if (type.is_array) {
+			int total_elements = 1;
+			for (int i = 0; i < type.dim_count; i++) total_elements *= type.dimensions[i];
+			return 4 * total_elements;
+		}
+
 		return 4;
 	}
 

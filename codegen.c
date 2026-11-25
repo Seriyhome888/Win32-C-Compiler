@@ -505,6 +505,12 @@ void emit_code(ASTNode* node) {
 		node->type = sym->type;
 		node->int_val = r;
 
+		if (sym->type.kind == TYPE_FUNC) {
+			printf("    mov %s, offset %s\n", reg_names[r], sym->name);
+			node->type = make_pointer_to(sym->type); // Decays to pointer-to-function
+			break;
+		}
+
 		if (sym->is_global_var) {
 			if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL)
 				printf("    movzx %s, byte ptr [%s]\n", reg_names[r], sym->asm_label);
@@ -513,7 +519,7 @@ void emit_code(ASTNode* node) {
 		}
 		else
 		{
-			// --- FIXED: Only load an 8-bit byte if it's a RAW char, NOT a pointer to a char (char*) ---
+			// --- Only load an 8-bit byte if it's a RAW char, NOT a pointer to a char (char*) ---
 			if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL) {
 				if (sym->offset < 0) {
 					printf("    movzx %s, byte ptr [ebp - %d]\n", reg_names[r], -sym->offset);
@@ -908,7 +914,11 @@ void emit_code(ASTNode* node) {
 			}
 
 			int r_addr = allocate_register();
-			if (right_sym->is_global_var) {
+
+			if (right_sym->type.kind == TYPE_FUNC) {
+				printf("    mov %s, offset %s\n", reg_names[r_addr], right_sym->name);
+			}
+			else if (right_sym->is_global_var) {
 				printf("    lea %s, dword ptr [%s]\n", reg_names[r_addr], right_sym->asm_label);
 			}
 			else if (right_sym->offset < 0) {
@@ -1146,6 +1156,13 @@ void emit_code(ASTNode* node) {
 				}
 
 				int r = allocate_register();
+
+				if (sym->type.kind == TYPE_FUNC) {
+					printf("    mov %s, offset %s\n", reg_names[r], sym->name);
+					node->int_val = r;
+					break;
+				}
+
 				if (sym->is_global_var) {
 					printf("    lea %s, dword ptr [%s]\n", reg_names[r], sym->asm_label);
 				}
@@ -1257,6 +1274,13 @@ void emit_code(ASTNode* node) {
 
 		// --- POINTER DEREFERENCE (*) ENGINE ---
 		if (node->op == TOKEN_STAR) {
+
+			if (node->left->type.kind == TYPE_POINTER && node->left->type.base_type &&
+				node->left->type.base_type->kind == TYPE_FUNC) {
+				node->int_val = rl; // Function designator stays as its code address
+				break;
+			}
+
 			int r = allocate_register();
 			int r_addr = ensure_register_loaded(rl);
 
@@ -1550,8 +1574,16 @@ void emit_code(ASTNode* node) {
 			was_spilled[i] = call_base_was_spilled[i];
 		}
 
-		// Execute the procedural jump statement
-		printf("    call %s\n", node->name);
+		// Execute the procedural jump statement (direct or indirect)
+		if (node->is_indirect) {
+			emit_code(node->right);
+			int r_fn = ensure_register_loaded(node->right->int_val);
+			printf("    call %s\n", reg_names[r_fn]);
+			free_register(r_fn);
+		}
+		else {
+			printf("    call %s\n", node->name);
+		}
 
 		// Balance caller stack parameters space allocations immediately upon exit
 		if (total_stack_bytes > 0) {
@@ -1563,8 +1595,11 @@ void emit_code(ASTNode* node) {
 		int r_was_spilled = was_spilled[r];
 
 		// Determine if the called function returns a float
-		Symbol* func_sym = lookup_symbol(node->name);
-		if (func_sym && func_sym->type.kind == TYPE_FLOAT) {
+		Symbol* func_sym = (!node->is_indirect) ? lookup_symbol(node->name) : NULL;
+		int returns_float = (node->type.kind == TYPE_FLOAT) ||
+			(func_sym && func_sym->type.kind == TYPE_FUNC && func_sym->type.base_type && func_sym->type.base_type->kind == TYPE_FLOAT);
+
+		if (returns_float) {
 			printf("    sub esp, 4\n");
 			printf("    fstp dword ptr [esp]\n");
 			printf("    mov %s, dword ptr [esp]\n", reg_names[r]);

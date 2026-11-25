@@ -1124,6 +1124,57 @@ int do_while_test() {
 	return 0;
 }
 
+typedef int (*MathOp)(int, int);
+
+int fp_add(int a, int b) { return a + b; }
+int fp_mul(int a, int b) { return a * b; }
+float fp_half(int x) { return x / 2.0; }
+
+int apply_op(int x, int y, int (*op)(int, int)) {
+	return op(x, y);
+}
+
+struct Handler {
+	int id;
+	MathOp callback;
+};
+
+int test_function_pointers() {
+	// 1. Direct assignment & address-of (&) assignment
+	int (*fn)(int, int);
+	fn = fp_add;
+	int r1 = fn(10, 20);          // 30
+
+	fn = &fp_mul;
+	int r2 = (*fn)(6, 7);         // 42
+
+	// 2. Passing function pointer as callback argument
+	int r3 = apply_op(8, 9, fp_add); // 17
+
+	// 3. Array of function pointers
+	MathOp ops[2];
+	ops[0] = fp_add;
+	ops[1] = fp_mul;
+	int r4 = ops[0](3, 4) + ops[1](3, 4); // 7 + 12 = 19
+
+	// 4. Function pointer inside a struct & float return
+	struct Handler h;
+	h.id = 1;
+	h.callback = fp_mul;
+	int r5 = h.callback(5, 5);    // 25
+
+	float (*f_ptr)(int);
+	f_ptr = fp_half;
+	float rf = f_ptr(9);          // 4.5
+
+	if (r1 == 30 && r2 == 42 && r3 == 17 && r4 == 19 && r5 == 25 && rf == 4.5) {
+		printf("Function Pointers (direct, (*fp), callbacks, arrays, structs, float) PASSED!\n");
+		return 1;
+	}
+	printf("Function Pointers FAILED: r1=%d, r2=%d, r3=%d, r4=%d, r5=%d, rf=%f\n", r1, r2, r3, r4, r5, rf);
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -1276,6 +1327,8 @@ int main()
 
 	do_while_test();
 
+	passed += test_function_pointers();
+
 	// Verify void return;
 	int flag;
 	flag = 0;
@@ -1291,12 +1344,12 @@ int main()
 	passed += test_union_ops();
 	passed += test_for_empty_clauses();
 
-	if (passed == 8) {
-		printf("ALL 8 BUGFIX TESTS PASSED!\n");
+	if (passed == 9) {
+		printf("ALL 9 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 8 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 9 passed)\n", passed);
 		return 1;
 	}
 
