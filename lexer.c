@@ -9,6 +9,62 @@ void init_lexer(FILE* src) {
 	ch = fgetc(src_file);
 }
 
+static int parse_escape_sequence(void) {
+	int esc = fgetc(src_file);
+	if (esc == EOF) {
+		fprintf(stderr, "Lexical Error: Unexpected EOF in escape sequence.\n");
+		exit(1);
+	}
+
+	switch (esc) {
+	case 'a':  ch = fgetc(src_file); return '\a';
+	case 'b':  ch = fgetc(src_file); return '\b';
+	case 'f':  ch = fgetc(src_file); return '\f';
+	case 'n':  ch = fgetc(src_file); return '\n';
+	case 'r':  ch = fgetc(src_file); return '\r';
+	case 't':  ch = fgetc(src_file); return '\t';
+	case 'v':  ch = fgetc(src_file); return '\v';
+	case '\\': ch = fgetc(src_file); return '\\';
+	case '\'': ch = fgetc(src_file); return '\'';
+	case '"':  ch = fgetc(src_file); return '\"';
+	case '?':  ch = fgetc(src_file); return '\?';
+
+	case 'x': { // Hexadecimal escape: \xHH...
+		int val = 0;
+		int digits = 0;
+		ch = fgetc(src_file);
+		while (isxdigit((unsigned char)ch)) {
+			int d = isdigit((unsigned char)ch) ? (ch - '0') : (tolower((unsigned char)ch) - 'a' + 10);
+			val = (val * 16) + d;
+			digits++;
+			ch = fgetc(src_file);
+		}
+		if (digits == 0) {
+			fprintf(stderr, "Lexical Error: \\x used with no following hex digits.\n");
+			exit(1);
+		}
+		return val & 0xFF;
+	}
+
+	default:
+		// Octal escape: \OOO (up to 3 octal digits: 0-7)
+		if (esc >= '0' && esc <= '7') {
+			int val = esc - '0';
+			int count = 1;
+			ch = fgetc(src_file);
+			while (count < 3 && ch >= '0' && ch <= '7') {
+				val = (val * 8) + (ch - '0');
+				count++;
+				ch = fgetc(src_file);
+			}
+			return val & 0xFF;
+		}
+		// Unknown escape fallback
+		ch = fgetc(src_file);
+		return esc;
+	}
+}
+
 Token next_token(void) {
 	Token tok;
 	memset(&tok, 0, sizeof(tok));
@@ -62,20 +118,19 @@ Token next_token(void) {
 		int len = 0;
 		while (ch != '"' && ch != EOF) {
 			if (ch == '\\') {
-				int next_ch = fgetc(src_file);
-				if (next_ch == 'n') if (len < 511) tok.lexeme[len++] = '\n';
-				else {
-					if (len < 511) tok.lexeme[len++] = ch;
-					if (len < 511) tok.lexeme[len++] = next_ch;
-				}
-				ch = fgetc(src_file);
+				int decoded = parse_escape_sequence();
+				if (len < 511) tok.lexeme[len++] = (char)decoded;
 				continue;
 			}
-			if (len < 511) tok.lexeme[len++] = ch;
+			if (len < 511) tok.lexeme[len++] = (char)ch;
 			ch = fgetc(src_file);
 		}
+		if (ch != '"') {
+			fprintf(stderr, "Lexical Error: Unterminated string literal.\n");
+			exit(1);
+		}
 		tok.lexeme[len] = '\0';
-		if (ch == '"') ch = fgetc(src_file);
+		ch = fgetc(src_file);
 		tok.type = TOKEN_STRING;
 		return tok;
 	}
@@ -134,6 +189,33 @@ Token next_token(void) {
 	}
 
 	switch (ch) {
+	case '\'': {
+		ch = fgetc(src_file);
+		if (ch == '\'' || ch == '\n' || ch == EOF) {
+			fprintf(stderr, "Lexical Error: Empty or invalid character literal.\n");
+			exit(1);
+		}
+
+		int char_val = 0;
+		if (ch == '\\') {
+			char_val = parse_escape_sequence();
+		}
+		else {
+			char_val = (unsigned char)ch;
+			ch = fgetc(src_file);
+		}
+
+		if (ch != '\'') {
+			fprintf(stderr, "Lexical Error: Multi-character or unterminated character constant.\n");
+			exit(1);
+		}
+		ch = fgetc(src_file); // Consume closing single quote
+
+		tok.type = TOKEN_INT_LIT; // C89 character constants evaluate as int
+		tok.int_val = char_val;
+		snprintf(tok.lexeme, sizeof(tok.lexeme), "%d", char_val);
+		return tok;
+	}
 
 	case '+':
 		ch = fgetc(src_file);

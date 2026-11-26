@@ -1175,6 +1175,42 @@ int test_function_pointers() {
 	return 0;
 }
 
+int test_char_literals() {
+	char c_plain = 'A';       // 65
+	char c_nl = '\n';         // 10
+	char c_tab = '\t';        // 9
+	char c_null = '\0';       // 0
+	char c_quote = '\'';      // 39
+	char c_slash = '\\';      // 92
+	char c_hex = '\x41';      // 65 ('A')
+	char c_oct = '\101';      // 65 ('A')
+	char c_oct_zero = '\07';  // 7 ('\a')
+
+	if (c_plain != 65 || c_nl != 10 || c_tab != 9 || c_null != 0 ||
+		c_quote != 39 || c_slash != 92 || c_hex != 'A' || c_oct != 'A' || c_oct_zero != '\a') {
+		printf("Char Literals Test FAILED!\n");
+		return 0;
+	}
+
+	// Verify C89 rule: sizeof('A') == sizeof(int) == 4, and 'Z' - 'A' == 25
+	int diff = 'Z' - 'A';
+	int matched = 0;
+	switch (c_hex) {
+	case 'A':
+		matched = 1;
+		break;
+	default:
+		matched = 0;
+	}
+
+	if (diff == 25 && sizeof('A') == 4 && matched == 1) {
+		printf("Char Literals & Escape Sequences ('A', '\\n', '\\x41', '\\101') PASSED!\n");
+		return 1;
+	}
+	printf("Char Literals Arithmetic/Switch FAILED!\n");
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -1328,6 +1364,8 @@ int main()
 	do_while_test();
 
 	passed += test_function_pointers();
+
+	test_char_literals();
 
 	// Verify void return;
 	int flag;
