@@ -169,23 +169,142 @@ Token next_token(void) {
 		return tok;
 	}
 
-	if (isdigit((unsigned char)ch)) { // Numerics
-		int len = 0;
-		int is_float = 0;
-		while (isdigit((unsigned char)ch) || ch == '.') {
-			if (ch == '.') is_float = 1;
-			if (len < 63) tok.lexeme[len++] = ch;
+	if (isdigit((unsigned char)ch)) {
+		int i = 0;
+
+		// 1. Check for Hexadecimal (0x... or 0X...)
+		if (ch == '0') {
+			tok.lexeme[i++] = (char)ch;
+			ch = fgetc(src_file);
+
+			if (ch == 'x' || ch == 'X') {
+				tok.lexeme[i++] = (char)ch;
+				ch = fgetc(src_file);
+
+				if (!isxdigit((unsigned char)ch)) {
+					fprintf(stderr, "Lexical Error: Invalid hexadecimal literal (no digits after 0x).\n");
+					exit(1);
+				}
+
+				unsigned int uval = 0;
+				while (isxdigit((unsigned char)ch)) {
+					int d = isdigit((unsigned char)ch)
+						? (ch - '0')
+						: (tolower((unsigned char)ch) - 'a' + 10);
+					uval = (uval * 16u) + (unsigned int)d;
+					if (i < 500) tok.lexeme[i++] = (char)ch;
+					ch = fgetc(src_file);
+				}
+
+				// Consume optional C89 integer suffixes: U/u, L/l, UL, LU
+				int has_u = 0, has_l = 0;
+				while (ch == 'u' || ch == 'U' || ch == 'l' || ch == 'L') {
+					if ((ch == 'u' || ch == 'U') && !has_u) has_u = 1;
+					else if ((ch == 'l' || ch == 'L') && !has_l) has_l = 1;
+					else {
+						fprintf(stderr, "Lexical Error: Invalid integer suffix on hex literal.\n");
+						exit(1);
+					}
+					if (i < 500) tok.lexeme[i++] = (char)ch;
+					ch = fgetc(src_file);
+				}
+
+				tok.lexeme[i] = '\0';
+				tok.type = TOKEN_INT_LIT;
+				tok.int_val = (int)uval;
+				return tok;
+			}
+		}
+
+		// 2. Scan remaining digits (could be Octal 0..., Decimal, or Float 0.5 / 1e5)
+		while (isdigit((unsigned char)ch)) {
+			if (i < 500) tok.lexeme[i++] = (char)ch;
 			ch = fgetc(src_file);
 		}
-		tok.lexeme[len] = '\0';
+
+		int is_float = 0;
+
+		// Fractional part (.ddd)
+		if (ch == '.') {
+			is_float = 1;
+			if (i < 500) tok.lexeme[i++] = (char)ch;
+			ch = fgetc(src_file);
+			while (isdigit((unsigned char)ch)) {
+				if (i < 500) tok.lexeme[i++] = (char)ch;
+				ch = fgetc(src_file);
+			}
+		}
+
+		// Exponent part (e+dd / E-dd)
+		if (ch == 'e' || ch == 'E') {
+			is_float = 1;
+			if (i < 500) tok.lexeme[i++] = (char)ch;
+			ch = fgetc(src_file);
+			if (ch == '+' || ch == '-') {
+				if (i < 500) tok.lexeme[i++] = (char)ch;
+				ch = fgetc(src_file);
+			}
+			if (!isdigit((unsigned char)ch)) {
+				fprintf(stderr, "Lexical Error: Exponent has no digits.\n");
+				exit(1);
+			}
+			while (isdigit((unsigned char)ch)) {
+				if (i < 500) tok.lexeme[i++] = (char)ch;
+				ch = fgetc(src_file);
+			}
+		}
+
 		if (is_float) {
-			tok.type = TOKEN_FLOAT_LIT;
+			tok.lexeme[i] = '\0';
 			tok.float_val = atof(tok.lexeme);
+
+			// Consume optional C89 floating suffix: f, F, l, L
+			if (ch == 'f' || ch == 'F' || ch == 'l' || ch == 'L') {
+				if (i < 500) tok.lexeme[i++] = (char)ch;
+				tok.lexeme[i] = '\0';
+				ch = fgetc(src_file);
+			}
+
+			tok.type = TOKEN_FLOAT_LIT;
+			return tok;
+		}
+
+		// 3. Integer Literal: Octal (leading '0') vs. Decimal
+		tok.lexeme[i] = '\0';
+		unsigned int uval = 0;
+
+		if (tok.lexeme[0] == '0' && i > 1) {
+			for (int k = 1; k < i; k++) {
+				if (tok.lexeme[k] < '0' || tok.lexeme[k] > '7') {
+					fprintf(stderr, "Lexical Error: Invalid digit '%c' in octal constant '%s'.\n",
+						tok.lexeme[k], tok.lexeme);
+					exit(1);
+				}
+				uval = (uval * 8u) + (unsigned int)(tok.lexeme[k] - '0');
+			}
 		}
 		else {
-			tok.type = TOKEN_INT_LIT;
-			tok.int_val = atoi(tok.lexeme);
+			for (int k = 0; k < i; k++) {
+				uval = (uval * 10u) + (unsigned int)(tok.lexeme[k] - '0');
+			}
 		}
+
+		// Consume optional C89 integer suffixes: U/u, L/l, UL, LU
+		int has_u = 0, has_l = 0;
+		while (ch == 'u' || ch == 'U' || ch == 'l' || ch == 'L') {
+			if ((ch == 'u' || ch == 'U') && !has_u) has_u = 1;
+			else if ((ch == 'l' || ch == 'L') && !has_l) has_l = 1;
+			else {
+				fprintf(stderr, "Lexical Error: Invalid integer suffix on constant.\n");
+				exit(1);
+			}
+			if (i < 500) tok.lexeme[i++] = (char)ch;
+			ch = fgetc(src_file);
+		}
+		tok.lexeme[i] = '\0';
+
+		tok.type = TOKEN_INT_LIT;
+		tok.int_val = (int)uval;
 		return tok;
 	}
 

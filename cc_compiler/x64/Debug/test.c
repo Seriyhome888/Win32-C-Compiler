@@ -1310,6 +1310,47 @@ int test_pointer_subscripting() {
 	return 1;
 }
 
+int test_numeric_literals() {
+	// 1. Hexadecimal literals (lowercase, uppercase, full 32-bit mask)
+	int h1 = 0xFF;          // 255
+	int h2 = 0X1A2b;        // 6699
+	int h_mask = 0xFFFFFFFF; // -1
+
+	// 2. Octal literals
+	int o1 = 0755;          // 493
+	int o2 = 0100;          // 64
+	int o_zero = 00;        // 0
+
+	// 3. Integer suffixes (U, L, UL, lu)
+	int s1 = 100U;          // 100
+	int s2 = 200L;          // 200
+	int s3 = 300UL;         // 300
+	int s4 = 0x10lu;        // 16
+	int s5 = 077u;          // 63
+
+	if (h1 != 255 || h2 != 6699 || h_mask != -1 ||
+		o1 != 493 || o2 != 64 || o_zero != 0 ||
+		s1 != 100 || s2 != 200 || s3 != 300 || s4 != 16 || s5 != 63) {
+		printf("Hex/Octal/Suffix Integer Literals FAILED!\n");
+		return 0;
+	}
+
+	// 4. Floating-point suffixes (f, F, L) and scientific notation
+	float f1 = 3.25f;
+	float f2 = 2.5F;
+	float f3 = 1.5L;
+	float f4 = 0.5f;
+	float f_exp = 2.5e2f;   // 250.0
+
+	if (f1 != 3.25 || f2 != 2.5 || f3 != 1.5 || f4 != 0.5 || f_exp != 250.0) {
+		printf("Float Suffixes & Exponent Literals FAILED!\n");
+		return 0;
+	}
+
+	printf("Numeric Literals (0xFF, 0755, 100U/L/UL, 3.25f, 2.5e2f) PASSED!\n");
+	return 1;
+}
+
 int main()
 {
 	int result;
@@ -1482,13 +1523,14 @@ int main()
 
 	passed += test_union_ops();
 	passed += test_for_empty_clauses();
+	passed += test_numeric_literals();
 
-	if (passed == 11) {
-		printf("ALL 11 BUGFIX TESTS PASSED!\n");
+	if (passed == 12) {
+		printf("ALL 12 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 11 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 12 passed)\n", passed);
 		return 1;
 	}
 
