@@ -10,6 +10,7 @@ typedef struct {
 	int is_float; // 1 = float, 0 = string
 	double float_val;
 	char str_val[512]; // Sized character array buffer bounds protection
+	int str_len;
 } LiteralEntry;
 
 static LiteralEntry literal_pool[MAX_LITERAL_BUFFER];
@@ -23,11 +24,14 @@ void add_buffered_float(int id, double val) {
 	literal_pool_count++;
 }
 
-void add_buffered_string(int id, const char* str) {
+void add_buffered_string(int id, const char* str, int len) {
 	if (literal_pool_count >= MAX_LITERAL_BUFFER) return;
+	if (len > 511) len = 511;
 	literal_pool[literal_pool_count].id = id;
 	literal_pool[literal_pool_count].is_float = 0;
-	strncpy(literal_pool[literal_pool_count].str_val, str, 511);
+	memcpy(literal_pool[literal_pool_count].str_val, str, len);
+	literal_pool[literal_pool_count].str_val[len] = '\0';
+	literal_pool[literal_pool_count].str_len = len;
 	literal_pool_count++;
 }
 
@@ -66,21 +70,41 @@ void flush_global_data_segment(void) {
 		}
 		else {
 			printf("str_lbl_%d DB ", literal_pool[i].id);
-			printf("\"");
-			for (int j = 0; literal_pool[i].str_val[j] != '\0'; j++) {
-				if (literal_pool[i].str_val[j] == '\n') {
-					if (literal_pool[i].str_val[j + 1] != '\0') printf("\", 10, \"");
-					else printf("\", 10");
+			int in_quotes = 0;
+			int first_item = 1;
+
+			for (int j = 0; j < literal_pool[i].str_len; j++) {
+				unsigned char c = (unsigned char)literal_pool[i].str_val[j];
+
+				// Emit printable ASCII (excluding double-quote '"' and backslash '\') inside quotes
+				if (c >= 32 && c <= 126 && c != '"' && c != '\\') {
+					if (!in_quotes) {
+						if (!first_item) printf(", ");
+						putchar('"');
+						in_quotes = 1;
+						first_item = 0;
+					}
+					putchar(c);
 				}
 				else {
-					putchar(literal_pool[i].str_val[j]);
+					if (in_quotes) {
+						putchar('"');
+						in_quotes = 0;
+					}
+					if (!first_item) printf(", ");
+					printf("%u", (unsigned int)c);
+					first_item = 0;
 				}
 			}
-			if (literal_pool[i].str_val[strlen(literal_pool[i].str_val) - 1] == '\n') {
+
+			if (in_quotes) {
+				putchar('"');
+			}
+			if (!first_item) {
 				printf(", 0\n");
 			}
 			else {
-				printf("\", 0\n");
+				printf("0\n"); // Empty string "" -> DB 0
 			}
 		}
 	}
@@ -553,7 +577,7 @@ void emit_code(ASTNode* node) {
 		}
 		else if (node->type.kind == TYPE_POINTER) {
 			int lbl = gen_label();
-			add_buffered_string(lbl, node->name);
+			add_buffered_string(lbl, node->name, node->int_val);
 			printf("    lea %s, str_lbl_%d\n", reg_names[r], lbl);
 		}
 		node->int_val = r;

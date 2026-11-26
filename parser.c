@@ -316,9 +316,11 @@ ASTNode* parse_primary(void) {
 	}
 	if (cur_tok.type == TOKEN_STRING) {
 		n = create_node(AST_LITERAL); n->type.kind = TYPE_POINTER;
-		strcpy(n->name, cur_tok.lexeme); match(TOKEN_STRING); return n;
+		memcpy(n->name, cur_tok.lexeme, cur_tok.int_val + 1);
+		n->int_val = cur_tok.int_val;
+		match(TOKEN_STRING); return n;
 	}
-		
+
 	if (cur_tok.type == TOKEN_IDENT) {
 		char name[64];
 		strcpy(name, cur_tok.lexeme);

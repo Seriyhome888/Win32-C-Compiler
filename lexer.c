@@ -130,6 +130,7 @@ Token next_token(void) {
 			exit(1);
 		}
 		tok.lexeme[len] = '\0';
+		tok.int_val = len; // Preserve exact byte length including embedded '\0'
 		ch = fgetc(src_file);
 		tok.type = TOKEN_STRING;
 		return tok;
@@ -344,7 +345,7 @@ Token next_token(void) {
 	return tok;
 }
 
-// --- NEW: PRECISE LEXER STREAM LOOKAHEAD ENGINE ---
+// --- PRECISE LEXER STREAM LOOKAHEAD ENGINE ---
 Token peek_next_token(void) {
 	// 1. Snapshot the complete active state of the lexer stream
 	long original_file_pos = ftell(src_file);

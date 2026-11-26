@@ -1211,6 +1211,56 @@ int test_char_literals() {
 	return 0;
 }
 
+int test_string_and_char_escapes() {
+	// 1. Single-quoted character constants & escapes
+	char c_plain = 'A';       // 65
+	char c_nl = '\n';         // 10
+	char c_tab = '\t';        // 9
+	char c_cr = '\r';         // 13
+	char c_null = '\0';       // 0
+	char c_quote = '\'';      // 39
+	char c_slash = '\\';      // 92
+	char c_hex = '\x41';      // 65 ('A')
+	char c_oct = '\101';      // 65 ('A')
+
+	if (c_plain != 65 || c_nl != 10 || c_tab != 9 || c_cr != 13 ||
+		c_null != 0 || c_quote != 39 || c_slash != 92 || c_hex != 'A' || c_oct != 'A') {
+		printf("Char Escapes FAILED!\n");
+		return 0;
+	}
+
+	// 2. String literal with \t, \r, \n, \", \\, \x41, \101, and embedded \0
+	char* s = "A\tB\r\n\"\\C\x44\105\0Z";
+
+	// Verify every byte in memory via *(s + offset)
+	if (*(s + 0) != 'A' ||   // 65
+		*(s + 1) != '\t' ||   // 9
+		*(s + 2) != 'B' ||   // 66
+		*(s + 3) != '\r' ||   // 13
+		*(s + 4) != '\n' ||   // 10
+		*(s + 5) != '"' ||   // 34
+		*(s + 6) != '\\' ||   // 92
+		*(s + 7) != 'C' ||   // 67
+		*(s + 8) != 'D' ||   // 68 (\x44)
+		*(s + 9) != 'E' ||   // 69 (\105)
+		*(s + 10) != '\0' ||  // 0  (\0)
+		*(s + 11) != 'Z') {   // 90 (byte after embedded null)
+		printf("String Escapes Byte Check FAILED!\n");
+		return 0;
+	}
+
+	// 3. Empty string literal "" -> DB 0
+	char* empty = "";
+	if (*empty != '\0') {
+		printf("Empty String Literal FAILED!\n");
+		return 0;
+	}
+
+	// 4. Print formatted output containing \t, \", and \\ to verify printf + MASM DB
+	printf("String & Char Escapes PASSED:\t\"Quoted\" \\ Backslash\n");
+	return 1;
+}
+
 int main()
 {
 	int result;
@@ -1366,6 +1416,7 @@ int main()
 	passed += test_function_pointers();
 
 	test_char_literals();
+	passed += test_string_and_char_escapes();
 
 	// Verify void return;
 	int flag;
@@ -1382,12 +1433,12 @@ int main()
 	passed += test_union_ops();
 	passed += test_for_empty_clauses();
 
-	if (passed == 9) {
-		printf("ALL 9 BUGFIX TESTS PASSED!\n");
+	if (passed == 10) {
+		printf("ALL 10 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 9 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 10 passed)\n", passed);
 		return 1;
 	}
 
