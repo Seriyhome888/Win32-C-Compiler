@@ -12,14 +12,95 @@ int local_offset = 0;
 
 int current_scope_level = 0;
 
+static int anon_tag_counter = 0;
+
+void match(TokenType type);
+
+static void register_enum_constant(const char* name, int value) {
+	Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
+	if (!sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+	strcpy(sym->name, name);
+	sym->type.kind = TYPE_INT;
+	sym->is_enum_const = 1;
+	sym->init_int = value;
+	sym->scope_level = current_scope_level;
+	sym->next = sym_table;
+	sym_table = sym;
+}
+
+// Parses: enum [Tag] { IDENT [= [-]INT], ... }
+// Expects TOKEN_ENUM to have already been matched.
+static DataType parse_enum_specifier(void) {
+	if (cur_tok.type == TOKEN_IDENT) {
+		match(TOKEN_IDENT); // Optional enum tag name
+	}
+
+	if (cur_tok.type == TOKEN_LBRACE) {
+		match(TOKEN_LBRACE);
+		int next_val = 0;
+
+		while (cur_tok.type != TOKEN_RBRACE && cur_tok.type != TOKEN_EOF) {
+			char const_name[64];
+			strcpy(const_name, cur_tok.lexeme);
+			match(TOKEN_IDENT);
+
+			if (cur_tok.type == TOKEN_ASSIGN) {
+				match(TOKEN_ASSIGN);
+				int sign = 1;
+				if (cur_tok.type == TOKEN_MINUS) {
+					sign = -1;
+					match(TOKEN_MINUS);
+				}
+				if (cur_tok.type == TOKEN_INT_LIT) {
+					next_val = sign * cur_tok.int_val;
+					match(TOKEN_INT_LIT);
+				}
+				else if (cur_tok.type == TOKEN_IDENT) {
+					// Allow referencing an earlier enum constant: e.g. B = A + 1
+					Symbol* ref = lookup_symbol(cur_tok.lexeme);
+					if (ref && ref->is_enum_const) {
+						next_val = sign * ref->init_int;
+						match(TOKEN_IDENT);
+					}
+					else {
+						fprintf(stderr, "Semantic Error: Enum initializer '%s' is not a constant.\n", cur_tok.lexeme);
+						exit(1);
+					}
+				}
+				else {
+					fprintf(stderr, "Syntax Error: Expected integer constant in enum '%s'.\n", const_name);
+					exit(1);
+				}
+			}
+
+			register_enum_constant(const_name, next_val);
+			next_val++;
+
+			if (cur_tok.type == TOKEN_COMMA) {
+				match(TOKEN_COMMA);
+				// Allow trailing comma before '}' (C99/common C89 extension used in cc.h)
+				if (cur_tok.type == TOKEN_RBRACE) break;
+			}
+			else {
+				break;
+			}
+		}
+		match(TOKEN_RBRACE);
+	}
+
+	DataType dt;
+	memset(&dt, 0, sizeof(dt));
+	dt.kind = TYPE_INT;
+	return dt;
+}
+
 static int is_type_name(Token tok) {
 	if (tok.type == TOKEN_CHAR) return 1;
-	if (tok.type == TOKEN_STRUCT || tok.type == TOKEN_UNION) return 1;
+	if (tok.type == TOKEN_STRUCT || tok.type == TOKEN_UNION || tok.type == TOKEN_ENUM) return 1;
 	if (tok.type == TOKEN_IDENT) {
 		if (strcmp(tok.lexeme, "int") == 0 || strcmp(tok.lexeme, "float") == 0) {
 			return 1;
 		}
-		// Check if the identifier has been registered as a custom type alias
 		Symbol* sym = lookup_symbol(tok.lexeme);
 		if (sym && sym->is_typedef) {
 			return 1;
@@ -28,24 +109,35 @@ static int is_type_name(Token tok) {
 	return 0;
 }
 
-void match(TokenType type);
-
 static DataType parse_base_type(void) {
 	DataType vt;
 	memset(&vt, 0, sizeof(vt));
 
-	if (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION) {
+	if (cur_tok.type == TOKEN_ENUM) {
+		match(TOKEN_ENUM);
+		return parse_enum_specifier();
+	}
+	else if (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION) {
 		int is_u = (cur_tok.type == TOKEN_UNION);
 		match(cur_tok.type);
 
-		// If there's an immediate opening brace, it's an inline definition
-		if (cur_tok.type == TOKEN_LBRACE) {
-			// Unfortunatley parse_struct_or_union_declaration creates an AST node.
-			// We can call it or lookup existing definitions if it's just a tag name:
+		char tag_name[64];
+		if (cur_tok.type == TOKEN_IDENT) {
+			strcpy(tag_name, cur_tok.lexeme);
+			match(TOKEN_IDENT);
+		}
+		else {
+			// Anonymous struct/union: e.g., typedef struct { ... } Token;
+			snprintf(tag_name, sizeof(tag_name), "__anon_tag_%d", anon_tag_counter++);
 		}
 
-		strcpy(vt.struct_name, cur_tok.lexeme);
-		match(TOKEN_IDENT);
+		// Inline body definition: e.g., typedef struct ASTNode { ... } ASTNode;
+		if (cur_tok.type == TOKEN_LBRACE) {
+			ASTNode* decl_ast = parse_struct_or_union_with_tag(is_u, tag_name);
+			free(decl_ast);
+		}
+
+		strcpy(vt.struct_name, tag_name);
 		vt.kind = is_u ? TYPE_UNION : TYPE_STRUCT;
 	}
 	else if (cur_tok.type == TOKEN_CHAR) {
@@ -62,10 +154,9 @@ static DataType parse_base_type(void) {
 			match(TOKEN_IDENT);
 		}
 		else {
-			// It must be a typedef alias
 			Symbol* sym = lookup_symbol(cur_tok.lexeme);
 			if (sym && sym->is_typedef) {
-				vt = sym->type; // Pull underlying base type context completely
+				vt = sym->type;
 				match(TOKEN_IDENT);
 			}
 			else {
@@ -126,6 +217,24 @@ static void skip_func_ptr_params(void) {
 	match(TOKEN_RPAREN);
 }
 
+static int parse_array_bound(void) {
+	if (cur_tok.type == TOKEN_INT_LIT) {
+		int val = cur_tok.int_val;
+		match(TOKEN_INT_LIT);
+		return val;
+	}
+	if (cur_tok.type == TOKEN_IDENT) {
+		Symbol* sym = lookup_symbol(cur_tok.lexeme);
+		if (sym && sym->is_enum_const) {
+			int val = sym->init_int;
+			match(TOKEN_IDENT);
+			return val;
+		}
+	}
+	fprintf(stderr, "Syntax Error: Expected constant integer array dimension, got '%s'.\n", cur_tok.lexeme);
+	exit(1);
+}
+
 // Parses standard declarators AND function pointer declarators: e.g. (*fp)(int, int) or (*ops[4])(int)
 static DataType parse_declarator(DataType base_type, char* out_name) {
 	while (cur_tok.type == TOKEN_STAR) {
@@ -149,8 +258,7 @@ static DataType parse_declarator(DataType base_type, char* out_name) {
 		int arr_count = 0;
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
-			arr_dims[arr_count++] = cur_tok.int_val;
-			match(TOKEN_INT_LIT);
+			arr_dims[arr_count++] = parse_array_bound();
 			match(TOKEN_RBRACKET);
 		}
 		match(TOKEN_RPAREN);
@@ -326,16 +434,20 @@ ASTNode* parse_primary(void) {
 		strcpy(name, cur_tok.lexeme);
 		match(TOKEN_IDENT);
 
-		// FIXED: Create identifier node and completely clean type layout
+		Symbol* sym = lookup_symbol(name);
+		if (sym && sym->is_enum_const) {
+			n = create_node(AST_LITERAL);
+			n->type.kind = TYPE_INT;
+			n->int_val = sym->init_int;
+			return n;
+		}
+
 		n = create_node(AST_IDENT);
 		strcpy(n->name, name);
-
-		Symbol* sym = lookup_symbol(name);
 		if (sym) {
-			n->type = sym->type; // Pull verified dimensions and base type context
+			n->type = sym->type;
 		}
 		else {
-			// Safe explicit clean slate fallback structure configuration
 			memset(&(n->type), 0, sizeof(DataType));
 			n->type.kind = TYPE_INT;
 		}
@@ -857,8 +969,7 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
 			m_type.is_array = 1;
-			m_type.dimensions[m_type.dim_count++] = cur_tok.int_val;
-			match(TOKEN_INT_LIT);
+			m_type.dimensions[m_type.dim_count++] = parse_array_bound();
 			match(TOKEN_RBRACKET);
 		}
 
@@ -936,11 +1047,26 @@ ASTNode* parse_program(void) {
 
 	// 2. INTERNAL LOOP: Drain top-level type definitions (struct/union definitions & typedefs)
 	// Also handles 'struct Tag var;' or 'extern struct Tag var;' cleanly.
-	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION ||
+	while (cur_tok.type == TOKEN_STRUCT || cur_tok.type == TOKEN_UNION || cur_tok.type == TOKEN_ENUM ||
 		cur_tok.type == TOKEN_TYPEDEF || cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN) {
 
 		if (cur_tok.type == TOKEN_TYPEDEF) {
 			parse_stmt();
+		}
+		else if (cur_tok.type == TOKEN_ENUM) {
+			match(TOKEN_ENUM);
+			DataType enum_dt = parse_enum_specifier();
+			if (cur_tok.type == TOKEN_SEMI) {
+				// Standalone enum definition: enum TokenType { ... };
+				match(TOKEN_SEMI);
+			}
+			else {
+				// File-scope variable of enum type: enum Color bg_color = RED;
+				decl_type = enum_dt;
+				ret_kind = TYPE_INT;
+				has_parsed_struct_decl_type = 1;
+				break;
+			}
 		}
 		else if (cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN) {
 			if (is_file_static || is_file_extern) {
@@ -1022,8 +1148,7 @@ ASTNode* parse_program(void) {
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
 			decl_type.is_array = 1;
-			decl_type.dimensions[decl_type.dim_count++] = cur_tok.int_val;
-			match(TOKEN_INT_LIT);
+			decl_type.dimensions[decl_type.dim_count++] = parse_array_bound();
 			match(TOKEN_RBRACKET);
 		}
 
@@ -1320,10 +1445,10 @@ ASTNode* parse_stmt(void) {
 
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
+			int dim_val = parse_array_bound();
 			vt.is_array = 1;
-			vt.dimensions[vt.dim_count++] = cur_tok.int_val;
-			total *= cur_tok.int_val;
-			match(TOKEN_INT_LIT);
+			vt.dimensions[vt.dim_count++] = dim_val;
+			total *= dim_val;
 			match(TOKEN_RBRACKET);
 		}
 
@@ -1522,12 +1647,30 @@ ASTNode* parse_stmt(void) {
 	if (cur_tok.type == TOKEN_CASE) {
 		ASTNode* n = create_node(AST_CASE);
 		match(TOKEN_CASE);
-		if (cur_tok.type != TOKEN_INT_LIT) {
+		int sign = 1;
+		if (cur_tok.type == TOKEN_MINUS) {
+			sign = -1;
+			match(TOKEN_MINUS);
+		}
+		if (cur_tok.type == TOKEN_INT_LIT) {
+			n->int_val = sign * cur_tok.int_val;
+			match(TOKEN_INT_LIT);
+		}
+		else if (cur_tok.type == TOKEN_IDENT) {
+			Symbol* sym = lookup_symbol(cur_tok.lexeme);
+			if (sym && sym->is_enum_const) {
+				n->int_val = sign * sym->init_int;
+				match(TOKEN_IDENT);
+			}
+			else {
+				fprintf(stderr, "Syntax Error: C89 requires case labels to be constant integer expressions.\n");
+				exit(1);
+			}
+		}
+		else {
 			fprintf(stderr, "Syntax Error: C89 requires case labels to be constant integer literals.\n");
 			exit(1);
 		}
-		n->int_val = cur_tok.int_val; // Capture the constant value
-		match(TOKEN_INT_LIT);
 		match(TOKEN_COLON);
 		return n;
 	}

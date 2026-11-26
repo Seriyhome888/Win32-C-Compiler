@@ -1351,6 +1351,64 @@ int test_numeric_literals() {
 	return 1;
 }
 
+enum Status {
+	STATUS_OK,
+	STATUS_ERR = -1,
+	STATUS_RETRY = 10,
+	STATUS_MAX
+};
+
+typedef struct {
+	int id;
+	char code;
+} AnonymousRecord;
+
+typedef struct NamedNode {
+	int value;
+	struct NamedNode* next;
+} NamedNode;
+
+int test_enum_and_typedef_struct() {
+	enum Status st = STATUS_RETRY;
+	int table[STATUS_MAX]; // Size 11
+	table[STATUS_OK] = 100;
+	table[STATUS_RETRY] = 200;
+
+	int matched = 0;
+	switch (st) {
+	case STATUS_OK:
+		matched = 1;
+		break;
+	case STATUS_RETRY:
+		matched = 2;
+		break;
+	case STATUS_ERR:
+		matched = 3;
+		break;
+	}
+
+	AnonymousRecord rec;
+	rec.id = 42;
+	rec.code = 'Z';
+
+	NamedNode n1;
+	NamedNode n2;
+	n1.value = 10;
+	n2.value = 25;
+	n1.next = &n2;
+	n2.next = (NamedNode*)0;
+
+	if (STATUS_OK == 0 && STATUS_ERR == -1 && STATUS_MAX == 11 &&
+		sizeof(table) == 44 && matched == 2 &&
+		rec.id == 42 && rec.code == 'Z' &&
+		n1.next->value == 25 && sizeof(AnonymousRecord) == 5) {
+		printf("Enum & Typedef Struct (Named, Anonymous, Self-Ref) PASSED!\n");
+		return 1;
+	}
+	printf("Enum & Typedef Struct FAILED!\n");
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -1524,13 +1582,14 @@ int main()
 	passed += test_union_ops();
 	passed += test_for_empty_clauses();
 	passed += test_numeric_literals();
+	passed += test_enum_and_typedef_struct();
 
-	if (passed == 12) {
-		printf("ALL 12 BUGFIX TESTS PASSED!\n");
+	if (passed == 13) {
+		printf("ALL 13 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 12 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 13 passed)\n", passed);
 		return 1;
 	}
 

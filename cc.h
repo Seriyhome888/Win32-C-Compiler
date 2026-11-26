@@ -28,7 +28,8 @@ typedef enum {
 	TOKEN_LOGAND, // && 
 	TOKEN_LOGOR,  // || 
 	TOKEN_NOT, TOKEN_ELLIPSIS, TOKEN_TYPEDEF, TOKEN_SIZEOF, TOKEN_STATIC, TOKEN_EXTERN, TOKEN_AUTO, TOKEN_REGISTER,
-	TOKEN_INC, TOKEN_DEC
+	TOKEN_INC, TOKEN_DEC,
+	TOKEN_ENUM
 } TokenType;
 
 typedef struct {
@@ -94,6 +95,7 @@ typedef struct Symbol {
 	int is_extern;         // 1 if it's an external prototype, 0 otherwise
 	int is_typedef;        // 1 if symbol is a type alias, 0 if regular variable
 	int is_register;       // 1 if declared with 'register' storage class
+	int is_enum_const;	   // 1 if symbol is an enum constant (value stored in init_int)	
 	struct Symbol* next;
 } Symbol;
 
@@ -130,6 +132,7 @@ void exit_scope(void);
 
 extern int is_codegen_phase;
 
+ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name);
 struct StructEnv* lookup_struct(const char* name);
 int resolve_member_offset(ASTNode* node, int* total_offset, DataType* out_type);
 

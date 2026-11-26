@@ -165,6 +165,7 @@ Token next_token(void) {
 		else if (strcmp(tok.lexeme, "extern") == 0) tok.type = TOKEN_EXTERN;
 		else if (strcmp(tok.lexeme, "auto") == 0) tok.type = TOKEN_AUTO;
 		else if (strcmp(tok.lexeme, "register") == 0) tok.type = TOKEN_REGISTER;
+		else if (strcmp(tok.lexeme, "enum") == 0) tok.type = TOKEN_ENUM;
 		else tok.type = TOKEN_IDENT;
 		return tok;
 	}
