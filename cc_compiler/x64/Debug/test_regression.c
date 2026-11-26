@@ -1409,6 +1409,28 @@ int test_enum_and_typedef_struct() {
 	return 0;
 }
 
+int test_bugfix_verify() {
+	// 1. Block-scope extern prototype (both int and float return types)
+	extern float fp_half(int x);
+	float half_val = fp_half(11); // Direct call, expects 5.5
+
+	// 2. Address-of (&) and ++/-- on array-of-struct members
+	struct Packet arr[2];
+	arr[0].payload = 100;
+	arr[1].payload = 200;
+
+	int* p_pay = &arr[1].payload;
+	*p_pay += 50;          // arr[1].payload becomes 250
+	arr[1].payload++;      // arr[1].payload becomes 251
+
+	if (half_val == 5.5 && arr[1].payload == 251 && arr[0].payload == 100) {
+		printf("Bugfix Verification (Block-Scope Extern Float & &arr[i].member) PASSED!\n");
+		return 1;
+	}
+	printf("Bugfix Verification FAILED: half=%f, payload=%d\n", half_val, arr[1].payload);
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -1583,13 +1605,14 @@ int main()
 	passed += test_for_empty_clauses();
 	passed += test_numeric_literals();
 	passed += test_enum_and_typedef_struct();
+	passed += test_bugfix_verify();
 
-	if (passed == 13) {
-		printf("ALL 13 BUGFIX TESTS PASSED!\n");
+	if (passed == 14) {
+		printf("ALL 14 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 13 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 14 passed)\n", passed);
 		return 1;
 	}
 

@@ -1425,8 +1425,9 @@ ASTNode* parse_stmt(void) {
 			Symbol* existing = lookup_symbol(name);
 			if (!existing) {
 				Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
+				if (!func_sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 				strcpy(func_sym->name, name);
-				func_sym->type.kind = vt.kind;
+				func_sym->type = make_func_returning(vt); // Wrap return type in TYPE_FUNC
 				func_sym->is_local = 0;
 				func_sym->is_extern = 1;
 				func_sym->is_variadic = is_var;

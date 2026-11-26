@@ -401,6 +401,8 @@ static int get_pointer_stride(DataType type) {
 	return 1;
 }
 
+static int emit_dot_base_address(ASTNode* member_node, int* out_total_offset, DataType* out_type);
+
 static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 	ASTNode* target = node->left;
 	int r_addr = allocate_register();
@@ -424,30 +426,45 @@ static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 		r_addr = emit_subscript_address(target, &val_type);
 		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
 	}
+
 	else if (target->kind == AST_MEMBER_ACCESS) {
 		int calc_off = 0;
-		resolve_member_offset(target, &calc_off, &val_type);
-		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
 
 		if (target->op == TOKEN_ARROW) {
+			resolve_member_offset(target, &calc_off, &val_type);
+			is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
 			emit_code(target->left);
 			int r_ptr = ensure_register_loaded(target->left->int_val);
 			printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r_addr], reg_names[r_ptr], calc_off);
 			free_register(r_ptr);
 		}
 		else {
-			ASTNode* root_id = target;
-			while (root_id && root_id->kind == AST_MEMBER_ACCESS) root_id = root_id->left;
-			Symbol* s_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+			int r_arr_base = emit_dot_base_address(target, &calc_off, &val_type);
+			is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
+			if (r_arr_base != -1) {
+				free_register(r_addr);
+				r_addr = ensure_register_loaded(r_arr_base);
+				if (calc_off != 0) {
+					printf("    add %s, %d\n", reg_names[r_addr], calc_off);
+				}
+			}
+			else {
+				resolve_member_offset(target, &calc_off, &val_type);
+				is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
+				ASTNode* root_id = target;
+				while (root_id && root_id->kind == AST_MEMBER_ACCESS) root_id = root_id->left;
+				Symbol* s_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
 
-			if (s_sym && s_sym->is_global_var)
-				printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r_addr], s_sym->asm_label, calc_off - s_sym->offset);
-			else if (calc_off < 0)
-				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -calc_off);
-			else
-				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], calc_off);
+				if (s_sym && s_sym->is_global_var)
+					printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r_addr], s_sym->asm_label, calc_off - s_sym->offset);
+				else if (calc_off < 0)
+					printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -calc_off);
+				else
+					printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], calc_off);
+			}
 		}
 	}
+
 	else if (target->kind == AST_UNOP && target->op == TOKEN_STAR) {
 		emit_code(target->left);
 		int r_ptr = ensure_register_loaded(target->left->int_val);
@@ -1240,32 +1257,47 @@ void emit_code(ASTNode* node) {
 				DataType elem_type;
 				node->int_val = emit_subscript_address(node->left, &elem_type);
 			}
+			
 			else if (node->left->kind == AST_MEMBER_ACCESS) {
 				DataType target_type;
 				int calc_off = 0;
-				resolve_member_offset(node->left, &calc_off, &target_type);
 
-				int r = allocate_register();
 				if (node->left->op == TOKEN_ARROW) {
+					resolve_member_offset(node->left, &calc_off, &target_type);
+					int r = allocate_register();
 					emit_code(node->left->left);
 					int r_ptr = ensure_register_loaded(node->left->left->int_val);
 					printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_ptr], calc_off);
 					free_register(r_ptr);
+					node->int_val = r;
 				}
 				else {
-					ASTNode* root_id = node->left;
-					while (root_id && root_id->kind == AST_MEMBER_ACCESS) root_id = root_id->left;
-					Symbol* s_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
+					int r_arr_base = emit_dot_base_address(node->left, &calc_off, &target_type);
+					if (r_arr_base != -1) {
+						r_arr_base = ensure_register_loaded(r_arr_base);
+						if (calc_off != 0) {
+							printf("    add %s, %d\n", reg_names[r_arr_base], calc_off);
+						}
+						node->int_val = r_arr_base;
+					}
+					else {
+						resolve_member_offset(node->left, &calc_off, &target_type);
+						int r = allocate_register();
+						ASTNode* root_id = node->left;
+						while (root_id && root_id->kind == AST_MEMBER_ACCESS) root_id = root_id->left;
+						Symbol* s_sym = (root_id && root_id->kind == AST_IDENT) ? lookup_symbol(root_id->name) : NULL;
 
-					if (s_sym && s_sym->is_global_var)
-						printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r], s_sym->asm_label, calc_off - s_sym->offset);
-					else if (calc_off < 0)
-						printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -calc_off);
-					else
-						printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], calc_off);
+						if (s_sym && s_sym->is_global_var)
+							printf("    lea %s, dword ptr [%s + %d]\n", reg_names[r], s_sym->asm_label, calc_off - s_sym->offset);
+						else if (calc_off < 0)
+							printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -calc_off);
+						else
+							printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], calc_off);
+						node->int_val = r;
+					}
 				}
-				node->int_val = r;
 			}
+
 			else {
 				fprintf(stderr, "Backend Error: Lvalue required for '&'.\n");
 				exit(1);
