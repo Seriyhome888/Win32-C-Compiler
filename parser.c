@@ -402,9 +402,28 @@ ASTNode* parse_postfix(void) {
 		else if (cur_tok.type == TOKEN_LBRACKET) {
 			ASTNode* arr = create_node(AST_ARRAY_ACCESS);
 			arr->left = n;
-			arr->type = n->type;
-			arr->type.is_array = 0;
-			arr->type.dim_count = 0;
+			if (n->type.is_array) {
+				arr->type = n->type;
+				if (arr->type.dim_count > 1) {
+					// Peel off the outermost dimension for multi-dimensional arrays
+					for (int d = 0; d < arr->type.dim_count - 1; d++) {
+						arr->type.dimensions[d] = arr->type.dimensions[d + 1];
+					}
+					arr->type.dim_count--;
+				}
+				else {
+					arr->type.is_array = 0;
+					arr->type.dim_count = 0;
+				}
+			}
+			else if (n->type.kind == TYPE_POINTER && n->type.base_type != NULL) {
+				arr->type = *(n->type.base_type);
+			}
+			else {
+				arr->type = n->type;
+				arr->type.is_array = 0;
+				arr->type.dim_count = 0;
+			}
 			match(TOKEN_LBRACKET); arr->right = parse_expr(); match(TOKEN_RBRACKET);
 			n = arr;
 		}

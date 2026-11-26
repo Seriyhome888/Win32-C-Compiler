@@ -266,21 +266,127 @@ void compile_array_offset(ASTNode* node, int* dim, Symbol* sym, int* r_out) {
 	}
 }
 
+static int get_pointer_stride(DataType type);
+
+static int emit_subscript_address(ASTNode* node, DataType* out_elem_type) {
+	// Case A: True array variable (e.g., int arr[5], int matrix[3][5], char* argv[4])
+	ASTNode* base = node;
+	while (base->left && base->left->kind == AST_ARRAY_ACCESS) {
+		base = base->left;
+	}
+
+	if (base->left && base->left->kind == AST_IDENT) {
+		Symbol* sym = lookup_symbol(base->left->name);
+		if (sym && sym->type.is_array) {
+			int dim = 0, r_off = -1;
+			compile_array_offset(node, &dim, sym, &r_off);
+			r_off = ensure_register_loaded(r_off);
+
+			int elem_size = get_array_element_size(sym->type);
+			if (elem_size == 4) {
+				printf("    shl %s, 2\n", reg_names[r_off]);
+			}
+			else if (elem_size != 1) {
+				printf("    imul %s, %d\n", reg_names[r_off], elem_size);
+			}
+
+			int r_ad = allocate_register();
+			r_off = ensure_register_loaded(r_off);
+			if (sym->is_global_var) {
+				printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
+			}
+			else if (sym->offset < 0) {
+				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
+			}
+			else {
+				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
+			}
+			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
+			free_register(r_off);
+
+			if (out_elem_type) {
+				*out_elem_type = sym->type;
+				out_elem_type->is_array = 0;
+				out_elem_type->dim_count = 0;
+			}
+			return r_ad;
+		}
+	}
+
+	// Case B: Pointer variable or general pointer expression (e.g., char* s; s[i], pp[i][j], get_ptr()[i])
+	emit_code(node->left);
+	int r_base = node->left->int_val;
+
+	emit_code(node->right);
+	int r_idx = node->right->int_val;
+
+	// Recover spilled operands safely without clobbering each other
+	if (r_base >= 0 && r_base < 3 && spill_offsets[r_base] > 0) {
+		int saved = (r_idx >= 0 && r_idx < 3) ? reg_map[r_idx] : 0;
+		if (r_idx >= 0 && r_idx < 3) reg_map[r_idx] = 1;
+		r_base = ensure_register_loaded(r_base);
+		if (r_idx >= 0 && r_idx < 3) reg_map[r_idx] = saved;
+	}
+	if (r_idx >= 0 && r_idx < 3 && spill_offsets[r_idx] > 0) {
+		int saved = (r_base >= 0 && r_base < 3) ? reg_map[r_base] : 0;
+		if (r_base >= 0 && r_base < 3) reg_map[r_base] = 1;
+		r_idx = ensure_register_loaded(r_idx);
+		if (r_base >= 0 && r_base < 3) reg_map[r_base] = saved;
+	}
+
+	int stride = get_pointer_stride(node->left->type);
+	if (stride == 4) {
+		printf("    shl %s, 2\n", reg_names[r_idx]);
+	}
+	else if (stride > 1) {
+		printf("    imul %s, %d\n", reg_names[r_idx], stride);
+	}
+
+	printf("    add %s, %s\n", reg_names[r_base], reg_names[r_idx]);
+	free_register(r_idx);
+
+	if (out_elem_type) {
+		if (node->left->type.kind == TYPE_POINTER && node->left->type.base_type != NULL) {
+			*out_elem_type = *(node->left->type.base_type);
+		}
+		else {
+			*out_elem_type = node->type;
+		}
+	}
+	return r_base;
+}
+
 // Ensures a register's original content is restored if it was spilled to the stack frame
 int ensure_register_loaded(int r) {
 	if (r >= 0 && r < 3 && spill_offsets[r] > 0) {
 		printf("    ; --- REGISTER UN-SPILL RECOVERY --- \n");
 
-		// Allocate a fresh target register to recover the data into
-		reg_map[r] = 0; // Temporarily unlock the victim map boundary
-		int target_reg = allocate_register();
-
-		// Emit the assembly instruction to read the spilled data back into an active register
-		printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[target_reg], spill_offsets[r]);
-
-		// Clear out tracking values for this specific slot now that it's recovered
+		int saved_offset = spill_offsets[r];
 		spill_offsets[r] = 0;
-		return target_reg;
+		was_spilled[r] = 0;
+
+		// Find a free register that is NOT 'r'
+		for (int i = 0; i < 3; i++) {
+			if (!reg_map[i]) {
+				reg_map[i] = 1;
+				printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[i], saved_offset);
+				return i;
+			}
+		}
+
+		// All 3 registers are currently occupied (meaning the other operand is in 'r'!).
+		// Spill register 1 (ecx) instead of 'r' (edx) so we never collide with 'r'!
+		int alt_victim = (r == 1) ? 0 : 1;
+		spill_stack_offset += 4;
+		if (spill_stack_offset - spill_base_offset > MAX_SPILLS) {
+			fprintf(stderr, "Backend Error: Register spill area exhausted.\n");
+			exit(1);
+		}
+		spill_offsets[alt_victim] = spill_stack_offset;
+		was_spilled[alt_victim] = 1;
+		printf("    mov dword ptr [ebp - %d], %s\n", spill_stack_offset, reg_names[alt_victim]);
+		printf("    mov %s, dword ptr [ebp - %d]\n", reg_names[alt_victim], saved_offset);
+		return alt_victim;
 	}
 	return r;
 }
@@ -314,31 +420,9 @@ static void emit_inc_dec(ASTNode* node, int is_inc, int is_postfix) {
 		else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], sym->offset);
 	}
 	else if (target->kind == AST_ARRAY_ACCESS) {
-		ASTNode* base = target;
-		while (base->left && base->left->kind == AST_ARRAY_ACCESS) base = base->left;
-		Symbol* sym = lookup_symbol(base->left->name);
-		if (!sym) { fprintf(stderr, "Backend Error: Array not found.\n"); exit(1); }
-
-		int dim = 0, r_off = -1;
-		compile_array_offset(target, &dim, sym, &r_off);
-		r_off = ensure_register_loaded(r_off);
-
-		int elem_size = get_array_element_size(sym->type);
-		is_byte = (elem_size == 1);
-		if (elem_size == 4) printf("    shl %s, 2\n", reg_names[r_off]);
-		else if (elem_size != 1) printf("    imul %s, %d\n", reg_names[r_off], elem_size);
-
-		if (sym->is_global_var) printf("    lea %s, dword ptr [%s]\n", reg_names[r_addr], sym->asm_label);
-		else if (sym->offset < 0) printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_addr], -sym->offset);
-		else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_addr], sym->offset);
-
-		printf("    add %s, %s\n", reg_names[r_addr], reg_names[r_off]);
-		free_register(r_off);
-
-		// Derive the dereferenced element type so pointers inside arrays (e.g., int* arr[4]; arr[0]++;) scale properly
-		val_type = sym->type;
-		val_type.is_array = 0;
-		val_type.dim_count = 0;
+		free_register(r_addr);
+		r_addr = emit_subscript_address(target, &val_type);
+		is_byte = (val_type.kind == TYPE_CHAR && val_type.base_type == NULL && !val_type.is_array);
 	}
 	else if (target->kind == AST_MEMBER_ACCESS) {
 		int calc_off = 0;
@@ -535,6 +619,23 @@ void emit_code(ASTNode* node) {
 			break;
 		}
 
+		if (sym->type.is_array) {
+			if (sym->is_global_var) {
+				printf("    lea %s, dword ptr [%s]\n", reg_names[r], sym->asm_label);
+			}
+			else if (sym->offset < 0) {
+				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r], -sym->offset);
+			}
+			else {
+				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r], sym->offset);
+			}
+			DataType elem = sym->type;
+			elem.is_array = 0;
+			elem.dim_count = 0;
+			node->type = make_pointer_to(elem);
+			break;
+		}
+
 		if (sym->is_global_var) {
 			if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL)
 				printf("    movzx %s, byte ptr [%s]\n", reg_names[r], sym->asm_label);
@@ -655,17 +756,17 @@ void emit_code(ASTNode* node) {
 		int rr = node->right->int_val;
 
 		// 3. CRITICAL HOOK: Recover spilled operands safely without clobbering each other
-		if (rr >= 0 && rr < 3 && spill_offsets[rr] > 0) {
-			int saved_rl_state = (rl >= 0 && rl < 3) ? reg_map[rl] : 0;
-			if (rl >= 0 && rl < 3) reg_map[rl] = 1;
-			rr = ensure_register_loaded(rr);
-			if (rl >= 0 && rl < 3) reg_map[rl] = saved_rl_state;
-		}
 		if (rl >= 0 && rl < 3 && spill_offsets[rl] > 0) {
 			int saved_rr_state = (rr >= 0 && rr < 3) ? reg_map[rr] : 0;
 			if (rr >= 0 && rr < 3) reg_map[rr] = 1;
 			rl = ensure_register_loaded(rl);
 			if (rr >= 0 && rr < 3) reg_map[rr] = saved_rr_state;
+		}
+		if (rr >= 0 && rr < 3 && spill_offsets[rr] > 0) {
+			int saved_rl_state = (rl >= 0 && rl < 3) ? reg_map[rl] : 0;
+			if (rl >= 0 && rl < 3) reg_map[rl] = 1;
+			rr = ensure_register_loaded(rr);
+			if (rl >= 0 && rl < 3) reg_map[rl] = saved_rl_state;
 		}
 
 		if (!is_float) {
@@ -865,53 +966,18 @@ void emit_code(ASTNode* node) {
 	}
 
 	case AST_ARRAY_ACCESS: {
-		ASTNode* base = node;
-		while (base->left && base->left->kind == AST_ARRAY_ACCESS) {
-			base = base->left;
-		}
+		DataType elem_type;
+		int r_ad = emit_subscript_address(node, &elem_type);
+		int elem_size = get_type_size(elem_type);
 
-		Symbol* sym = lookup_symbol(base->left->name);
-		if (!sym) {
-			fprintf(stderr, "\n; Backend Error: Array base identifier '%s' not found!\n", base->left->name);
-			exit(1);
-		}
-
-		int dim = 0, r_off = -1;
-		compile_array_offset(node, &dim, sym, &r_off);
-		r_off = ensure_register_loaded(r_off);
-
-		int elem_size = get_array_element_size(sym->type);
-		if (elem_size == 4) {
-			printf("    shl %s, 2\n", reg_names[r_off]);
-		}
-		else if (elem_size != 1) {
-			printf("    imul %s, %d\n", reg_names[r_off], elem_size);
-		}
-
-		int r_ad = allocate_register();
-		if (sym->is_global_var) {
-			printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
-			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
-		}
-		else if (sym->offset < 0) {
-			printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
-		}
-		else {
-			printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
-			printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
-		}
-
-		free_register(r_off);
-
-		if (elem_size == 1) {
+		if (elem_size == 1 && elem_type.kind == TYPE_CHAR && elem_type.base_type == NULL) {
 			printf("    movzx %s, byte ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
 			node->type.kind = TYPE_CHAR;
+			node->type.base_type = NULL;
 		}
 		else {
 			printf("    mov %s, dword ptr [%s]\n", reg_names[r_ad], reg_names[r_ad]);
-			node->type = sym->type;
-			node->type.is_array = 0;
+			node->type = elem_type;
 		}
 
 		node->int_val = r_ad;
@@ -1099,47 +1165,19 @@ void emit_code(ASTNode* node) {
 			}
 		}
 		else if (node->left->kind == AST_ARRAY_ACCESS) {
-			ASTNode* base = node->left;
-			while (base->left && base->left->kind == AST_ARRAY_ACCESS) base = base->left;
+			DataType elem_type;
+			int r_ad = emit_subscript_address(node->left, &elem_type);
+			rv = ensure_register_loaded(rv);
+			int elem_size = get_type_size(elem_type);
 
-			Symbol* sym = lookup_symbol(base->left->name);
-			if (!sym) { fprintf(stderr, "\n; Backend Error: Array not found!\n"); exit(1); }
-
-			int dim = 0, r_off = -1;
-			compile_array_offset(node->left, &dim, sym, &r_off);
-			r_off = ensure_register_loaded(r_off);
-
-			int elem_size = get_array_element_size(sym->type);
-			if (elem_size == 4) {
-				printf("    shl %s, 2\n", reg_names[r_off]);
-			}
-			else if (elem_size != 1) {
-				printf("    imul %s, %d\n", reg_names[r_off], elem_size);
-			}
-
-			int r_ad = allocate_register();
-			if (sym->is_global_var) {
-				printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
-				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
-			}
-			else if (sym->offset < 0) {
-				printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
-			}
-			else {
-				printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
-				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
-			}
-
-			if (elem_size == 1) {
+			if (elem_size == 1 && elem_type.kind == TYPE_CHAR && elem_type.base_type == NULL) {
 				printf("    mov byte ptr [%s], %s\n", reg_names[r_ad], reg_names_8[rv]);
 			}
 			else {
 				printf("    mov dword ptr [%s], %s\n", reg_names[r_ad], reg_names[rv]);
 			}
 			free_register(r_ad);
-			free_register(r_off);
-		}
+			}
 
 		// Pass the assigned register value up to the parent node context
 		node->int_val = rv;
@@ -1199,28 +1237,8 @@ void emit_code(ASTNode* node) {
 				node->int_val = r;
 			}
 			else if (node->left->kind == AST_ARRAY_ACCESS) {
-				ASTNode* base = node->left;
-				while (base->left && base->left->kind == AST_ARRAY_ACCESS) base = base->left;
-
-				Symbol* sym = lookup_symbol(base->left->name);
-				if (!sym) { fprintf(stderr, "Backend Error: Array '%s' not found.\n", base->left->name); exit(1); }
-
-				int dim = 0, r_off = -1;
-				compile_array_offset(node->left, &dim, sym, &r_off);
-				r_off = ensure_register_loaded(r_off);
-
-				int elem_size = get_array_element_size(sym->type);
-				if (elem_size == 4) printf("    shl %s, 2\n", reg_names[r_off]);
-				else if (elem_size != 1) printf("    imul %s, %d\n", reg_names[r_off], elem_size);
-
-				int r_ad = allocate_register();
-				if (sym->is_global_var) printf("    lea %s, dword ptr [%s]\n", reg_names[r_ad], sym->asm_label);
-				else if (sym->offset < 0) printf("    lea %s, dword ptr [ebp - %d]\n", reg_names[r_ad], -sym->offset);
-				else printf("    lea %s, dword ptr [ebp + %d]\n", reg_names[r_ad], sym->offset);
-
-				printf("    add %s, %s\n", reg_names[r_ad], reg_names[r_off]);
-				free_register(r_off);
-				node->int_val = r_ad;
+				DataType elem_type;
+				node->int_val = emit_subscript_address(node->left, &elem_type);
 			}
 			else if (node->left->kind == AST_MEMBER_ACCESS) {
 				DataType target_type;
@@ -1664,11 +1682,11 @@ void emit_code(ASTNode* node) {
 	case AST_MEMBER_ACCESS: {
 		DataType target_type;
 		int calculated_offset = 0;
-		int r = allocate_register();
 
 		if (node->op == TOKEN_ARROW) {
 			emit_code(node->left);
-			int r_ptr = node->left->int_val;
+			int r_ptr = ensure_register_loaded(node->left->int_val);
+			int r = allocate_register();
 
 			resolve_member_offset(node, &calculated_offset, &target_type);
 			if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL) {
@@ -1678,19 +1696,23 @@ void emit_code(ASTNode* node) {
 				printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_ptr], calculated_offset);
 			}
 			free_register(r_ptr);
+			node->int_val = r;
+			node->type = target_type;
+			break;
 		}
 		else { // Dot Operator (.)
 			int r_arr_base = emit_dot_base_address(node, &calculated_offset, &target_type);
+			int r = allocate_register();
+
 			if (r_arr_base != -1) {
+				r_arr_base = ensure_register_loaded(r_arr_base);
 				if (target_type.kind == TYPE_CHAR && target_type.base_type == NULL)
 					printf("    movzx %s, byte ptr [%s + %d]\n", reg_names[r], reg_names[r_arr_base], calculated_offset);
 				else
 					printf("    mov %s, dword ptr [%s + %d]\n", reg_names[r], reg_names[r_arr_base], calculated_offset);
 				free_register(r_arr_base);
 			}
-
 			else {
-
 				ASTNode* root_id = node;
 				while (root_id && root_id->kind == AST_MEMBER_ACCESS) {
 					root_id = root_id->left;
@@ -1725,11 +1747,11 @@ void emit_code(ASTNode* node) {
 					}
 				}
 			}
-		}
 
-		node->int_val = r;
-		node->type = target_type;
-		break;
+			node->int_val = r;
+			node->type = target_type;
+			break;
+		}
 	}
 
 	case AST_SWITCH: {

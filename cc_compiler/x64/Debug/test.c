@@ -1261,6 +1261,55 @@ int test_string_and_char_escapes() {
 	return 1;
 }
 
+int test_pointer_subscripting() {
+	// 1. char* subscripting (reads & writes)
+	char buf[5];
+	char* s = "Hello";
+	buf[0] = s[0]; // 'H'
+	buf[1] = s[1]; // 'e'
+	buf[2] = s[4]; // 'o'
+	buf[3] = '\0';
+
+	char* p = &buf[0];
+	p[1] = 'a';    // Mutates buf[1] from 'e' to 'a' -> "Hao"
+	p[2]++;        // Mutates buf[2] from 'o' to 'p' -> "Hap"
+
+	if (p[0] != 'H' || buf[1] != 'a' || p[2] != 'p' || p[3] != '\0') {
+		printf("Pointer Subscripting (char*) FAILED: %c%c%c\n", p[0], p[1], p[2]);
+		return 0;
+	}
+
+	// 2. int* subscripting (4-byte stride) & &ptr[i]
+	int nums[3];
+	nums[0] = 10;
+	nums[1] = 20;
+	nums[2] = 30;
+
+	int* ip = nums; // Note: if array decay isn't enabled yet, use &nums[0]
+	ip[1] += 5;     // nums[1] becomes 25
+	int* third = &ip[2];
+	*third = 35;
+
+	if (ip[0] != 10 || ip[1] != 25 || nums[2] != 35) {
+		printf("Pointer Subscripting (int*) FAILED: %d, %d, %d\n", ip[0], ip[1], nums[2]);
+		return 0;
+	}
+
+	// 3. struct Packet* subscripting (10-byte stride)
+	struct Packet pkts[2];
+	pkts[0].payload = 111;
+	pkts[1].payload = 222;
+	struct Packet* sp = &pkts[0];
+
+	if (sp[0].payload != 111 || sp[1].payload != 222) {
+		printf("Pointer Subscripting (struct*) FAILED: %d, %d\n", sp[0].payload, sp[1].payload);
+		return 0;
+	}
+
+	printf("Pointer Subscripting (char*, int*, struct*, &ptr[i]) PASSED!\n");
+	return 1;
+}
+
 int main()
 {
 	int result;
@@ -1417,6 +1466,7 @@ int main()
 
 	test_char_literals();
 	passed += test_string_and_char_escapes();
+	passed += test_pointer_subscripting();
 
 	// Verify void return;
 	int flag;
@@ -1433,12 +1483,12 @@ int main()
 	passed += test_union_ops();
 	passed += test_for_empty_clauses();
 
-	if (passed == 10) {
-		printf("ALL 10 BUGFIX TESTS PASSED!\n");
+	if (passed == 11) {
+		printf("ALL 11 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 10 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 11 passed)\n", passed);
 		return 1;
 	}
 
