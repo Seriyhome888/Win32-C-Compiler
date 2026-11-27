@@ -962,52 +962,61 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 	int max_align = 1;
 
 	while (cur_tok.type != TOKEN_RBRACE && cur_tok.type != TOKEN_EOF) {
-		// 1. Parse any valid base type (int, float, char, struct/union, typedef)
-		DataType m_type = parse_base_type();
+		// 1. Parse the shared base type once per declaration line (int, float, char, struct/union, typedef)
+		DataType base_m_type = parse_base_type();
 
-		// 2. Parse pointer levels (e.g., char* name; or struct Node* next;)
-		char m_name[64];
-		m_type = parse_declarator(m_type, m_name);
+		// 2. Loop across comma-separated member declarators: e.g., int x, *y, z;
+		while (1) {
+			char m_name[64];
+			DataType m_type = parse_declarator(base_m_type, m_name);
 
-		// 3. Support fixed-size array members inside structs/unions
-		while (cur_tok.type == TOKEN_LBRACKET) {
-			match(TOKEN_LBRACKET);
-			m_type.is_array = 1;
-			m_type.dimensions[m_type.dim_count++] = parse_array_bound();
-			match(TOKEN_RBRACKET);
+			// 3. Support fixed-size array members inside structs/unions
+			while (cur_tok.type == TOKEN_LBRACKET) {
+				match(TOKEN_LBRACKET);
+				m_type.is_array = 1;
+				m_type.dimensions[m_type.dim_count++] = parse_array_bound();
+				match(TOKEN_RBRACKET);
+			}
+
+			int member_size = get_type_size(m_type);
+			int member_align = get_type_alignment(m_type);
+			if (member_align > max_align) {
+				max_align = member_align;
+			}
+
+			Member* m = (Member*)calloc(1, sizeof(Member));
+			if (!m) {
+				fprintf(stderr, "Fatal Error: Out of memory during member allocation.\n");
+				exit(1);
+			}
+			strcpy(m->name, m_name);
+			m->type = m_type;
+
+			if (is_union) {
+				m->offset = 0;
+				if (member_size > total_size) {
+					total_size = member_size;
+				}
+			}
+			else {
+				current_offset = (current_offset + member_align - 1) & ~(member_align - 1);
+				m->offset = current_offset;
+				current_offset += member_size;
+				total_size = current_offset;
+			}
+
+			*mem_tail = m;
+			mem_tail = &(m->next);
+
+			if (cur_tok.type == TOKEN_COMMA) {
+				match(TOKEN_COMMA);
+			}
+			else {
+				break;
+			}
 		}
 
 		match(TOKEN_SEMI);
-
-		int member_size = get_type_size(m_type);
-		int member_align = get_type_alignment(m_type);
-		if (member_align > max_align) {
-			max_align = member_align;
-		}
-
-		Member* m = (Member*)calloc(1, sizeof(Member));
-		if (!m) {
-			fprintf(stderr, "Fatal Error: Out of memory during member allocation.\n");
-			exit(1);
-		}
-		strcpy(m->name, m_name);
-		m->type = m_type;
-
-		if (is_union) {
-			m->offset = 0;
-			if (member_size > total_size) {
-				total_size = member_size;
-			}
-		}
-		else {
-			current_offset = (current_offset + member_align - 1) & ~(member_align - 1);
-			m->offset = current_offset;
-			current_offset += member_size;
-			total_size = current_offset;
-		}
-
-		*mem_tail = m;
-		mem_tail = &(m->next);
 	}
 	match(TOKEN_RBRACE);
 
@@ -1148,92 +1157,96 @@ ASTNode* parse_program(void) {
 	}
 
 	// 5 & 6. Parse pointer asterisks, function-pointer declarator (*name)(...), and identifier name
+	// 5. Save the shared base type (e.g. 'int', 'struct Point') before parsing declarators
+	DataType base_decl_type = decl_type;
+
 	char name[64];
-	decl_type = parse_declarator(decl_type, name);
+	decl_type = parse_declarator(base_decl_type, name);
 	ret_kind = decl_type.kind;
 
 	// 7. BRANCH A: GLOBAL / STATIC / EXTERN VARIABLE DECLARATION (not followed by '(')
 	if (cur_tok.type != TOKEN_LPAREN) {
-		// Parse optional array dimensions (e.g., extern int g_arr[10]; or char g_chars[5];)
-		while (cur_tok.type == TOKEN_LBRACKET) {
-			match(TOKEN_LBRACKET);
-			decl_type.is_array = 1;
-			decl_type.dimensions[decl_type.dim_count++] = parse_array_bound();
-			match(TOKEN_RBRACKET);
-		}
-
-		// Parse optional constant initializer (disallowed on pure extern declarations)
-		int has_init = 0;
-		int init_int = 0;
-		double init_float = 0.0;
-
-		if (cur_tok.type == TOKEN_ASSIGN) {
-			if (is_file_extern) {
-				fprintf(stderr, "Semantic Error: Extern variable '%s' cannot have an initializer.\n", name);
-				exit(1);
-			}
-			match(TOKEN_ASSIGN);
-			has_init = 1;
-
-			int sign = 1;
-			if (cur_tok.type == TOKEN_MINUS) {
-				sign = -1;
-				match(TOKEN_MINUS);
+		while (1) {
+			while (cur_tok.type == TOKEN_LBRACKET) {
+				match(TOKEN_LBRACKET);
+				decl_type.is_array = 1;
+				decl_type.dimensions[decl_type.dim_count++] = parse_array_bound();
+				match(TOKEN_RBRACKET);
 			}
 
-			if (cur_tok.type == TOKEN_INT_LIT) {
-				init_int = sign * cur_tok.int_val;
-				init_float = (double)init_int;
-				match(TOKEN_INT_LIT);
+			int has_init = 0;
+			int init_int = 0;
+			double init_float = 0.0;
+
+			if (cur_tok.type == TOKEN_ASSIGN) {
+				if (is_file_extern) {
+					fprintf(stderr, "Semantic Error: Extern variable '%s' cannot have an initializer.\n", name);
+					exit(1);
+				}
+				match(TOKEN_ASSIGN);
+				has_init = 1;
+
+				int sign = 1;
+				if (cur_tok.type == TOKEN_MINUS) {
+					sign = -1;
+					match(TOKEN_MINUS);
+				}
+
+				if (cur_tok.type == TOKEN_INT_LIT) {
+					init_int = sign * cur_tok.int_val;
+					init_float = (double)init_int;
+					match(TOKEN_INT_LIT);
+				}
+				else if (cur_tok.type == TOKEN_FLOAT_LIT) {
+					init_float = sign * cur_tok.float_val;
+					init_int = (int)init_float;
+					match(TOKEN_FLOAT_LIT);
+				}
+				else {
+					fprintf(stderr, "Semantic Error: Global variable '%s' requires a constant initializer.\n", name);
+					exit(1);
+				}
 			}
-			else if (cur_tok.type == TOKEN_FLOAT_LIT) {
-				init_float = sign * cur_tok.float_val;
-				init_int = (int)init_float;
-				match(TOKEN_FLOAT_LIT);
+
+			Symbol* existing = lookup_symbol(name);
+			if (existing && existing->is_global_var && existing->scope_level == 0) {
+				if (!is_file_extern && existing->is_extern) {
+					existing->is_extern = 0;
+					existing->is_static = is_file_static;
+					existing->has_init = has_init;
+					existing->init_int = init_int;
+					existing->init_float = init_float;
+					existing->type = decl_type;
+				}
 			}
 			else {
-				fprintf(stderr, "Semantic Error: Global variable '%s' requires a constant initializer.\n", name);
-				exit(1);
+				Symbol* g_sym = (Symbol*)calloc(1, sizeof(Symbol));
+				if (!g_sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+				strcpy(g_sym->name, name);
+				strcpy(g_sym->asm_label, name);
+				g_sym->type = decl_type;
+				g_sym->is_local = 0;
+				g_sym->is_static = is_file_static;
+				g_sym->is_extern = is_file_extern;
+				g_sym->is_global_var = 1;
+				g_sym->has_init = has_init;
+				g_sym->init_int = init_int;
+				g_sym->init_float = init_float;
+				g_sym->scope_level = 0;
+				g_sym->next = sym_table;
+				sym_table = g_sym;
+			}
+
+			if (cur_tok.type == TOKEN_COMMA) {
+				match(TOKEN_COMMA);
+				decl_type = parse_declarator(base_decl_type, name);
+			}
+			else {
+				break;
 			}
 		}
 
 		match(TOKEN_SEMI);
-
-		// Avoid duplicate symbol entries if a header with 'extern int x;' is included multiple times
-		Symbol* existing = lookup_symbol(name);
-		if (existing && existing->is_global_var && existing->scope_level == 0) {
-			if (!is_file_extern && existing->is_extern) {
-				// Upgrade prior extern declaration to actual definition in this translation unit
-				existing->is_extern = 0;
-				existing->is_static = is_file_static;
-				existing->has_init = has_init;
-				existing->init_int = init_int;
-				existing->init_float = init_float;
-				existing->type = decl_type;
-			}
-			ASTNode* var_node = create_node(AST_VAR_DECL);
-			strcpy(var_node->name, name);
-			return var_node;
-		}
-
-		// Register the global/static/extern variable in the persistent symbol table
-		Symbol* g_sym = (Symbol*)calloc(1, sizeof(Symbol));
-		if (!g_sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
-		strcpy(g_sym->name, name);
-		strcpy(g_sym->asm_label, name);
-		g_sym->type = decl_type;
-		g_sym->is_local = 0;
-		g_sym->is_static = is_file_static;
-		g_sym->is_extern = is_file_extern;
-		g_sym->is_global_var = 1;
-		g_sym->has_init = has_init;
-		g_sym->init_int = init_int;
-		g_sym->init_float = init_float;
-		g_sym->scope_level = 0;
-		g_sym->next = sym_table;
-		sym_table = g_sym;
-
-		// Return a variable declaration node (emitted later by emit_global_variables() or emit_external_declarations())
 		ASTNode* var_node = create_node(AST_VAR_DECL);
 		strcpy(var_node->name, name);
 		return var_node;
@@ -1359,32 +1372,38 @@ ASTNode* parse_program(void) {
 }
 
 ASTNode* parse_stmt(void) {
-	// 1. HANDLE TYPEDEF REGISTRATION DIRECTLY
+	// 1. HANDLE TYPEDEF REGISTRATION DIRECTLY (supports comma-separated aliases: typedef int A, *B;)
 	if (cur_tok.type == TOKEN_TYPEDEF) {
 		match(TOKEN_TYPEDEF);
 
-		// Parse the base type definition layer
 		DataType base_t = parse_base_type();
 
-		char alias_name[64];
-		base_t = parse_declarator(base_t, alias_name);
+		while (1) {
+			char alias_name[64];
+			DataType full_t = parse_declarator(base_t, alias_name);
+
+			Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
+			if (!sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+			strcpy(sym->name, alias_name);
+			sym->type = full_t;
+			sym->is_typedef = 1;
+			sym->scope_level = current_scope_level;
+			sym->next = sym_table;
+			sym_table = sym;
+
+			if (cur_tok.type == TOKEN_COMMA) {
+				match(TOKEN_COMMA);
+			}
+			else {
+				break;
+			}
+		}
+
 		match(TOKEN_SEMI);
-
-		// Register the new type entry inside the compiler symbol table
-		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
-		strcpy(sym->name, alias_name);
-		sym->type = base_t;
-		sym->is_typedef = 1; // Explicitly tag as type definition
-		sym->scope_level = current_scope_level;
-		sym->next = sym_table;
-		sym_table = sym;
-
-		// Return a structural placeholder variable decl that codegen ignores safely
 		return create_node(AST_VAR_DECL);
 	}
 
-	// 2. REWRITE VARIABLE DECLARATION DETECTION BY USING OUR TYPE NAME HELPER
-	// 2. LOCAL DECLARATIONS: static, extern, auto, register, or type name
+	// 2. LOCAL DECLARATIONS: static, extern, auto, register, or type name (supports multi-declarators)
 	if (cur_tok.type == TOKEN_STATIC || cur_tok.type == TOKEN_EXTERN ||
 		cur_tok.type == TOKEN_AUTO || cur_tok.type == TOKEN_REGISTER || is_type_name(cur_tok)) {
 
@@ -1404,10 +1423,10 @@ ASTNode* parse_stmt(void) {
 			exit(1);
 		}
 
-		DataType vt = parse_base_type();
+		DataType base_vt = parse_base_type();
 
 		char name[64];
-		vt = parse_declarator(vt, name);
+		DataType vt = parse_declarator(base_vt, name);
 
 		// Block-scope function prototype: e.g., extern int helper(int x);
 		if (cur_tok.type == TOKEN_LPAREN) {
@@ -1437,7 +1456,7 @@ ASTNode* parse_stmt(void) {
 				Symbol* func_sym = (Symbol*)calloc(1, sizeof(Symbol));
 				if (!func_sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 				strcpy(func_sym->name, name);
-				func_sym->type = make_func_returning(vt); // Wrap return type in TYPE_FUNC
+				func_sym->type = make_func_returning(vt);
 				func_sym->is_local = 0;
 				func_sym->is_extern = 1;
 				func_sym->is_variadic = is_var;
@@ -1448,131 +1467,151 @@ ASTNode* parse_stmt(void) {
 			return create_node(AST_VAR_DECL);
 		}
 
-		int total = 1;
+		ASTNode* init_block = create_node(AST_BLOCK);
+		ASTNode** init_tail = &(init_block->body);
+		int has_any_dyn_init = 0;
 
-		if (vt.is_array) {
-			for (int i = 0; i < vt.dim_count; i++) total *= vt.dimensions[i];
-		}
+		while (1) {
+			int total = 1;
 
-		while (cur_tok.type == TOKEN_LBRACKET) {
-			match(TOKEN_LBRACKET);
-			int dim_val = parse_array_bound();
-			vt.is_array = 1;
-			vt.dimensions[vt.dim_count++] = dim_val;
-			total *= dim_val;
-			match(TOKEN_RBRACKET);
-		}
-
-		int has_init = 0;
-		int init_int = 0;
-		double init_float = 0.0;
-		ASTNode* dyn_init_expr = NULL;
-
-		if (cur_tok.type == TOKEN_ASSIGN) {
-			if (is_ext) {
-				fprintf(stderr, "Semantic Error: Block-scope extern '%s' cannot have an initializer.\n", name);
-				exit(1);
+			if (vt.is_array) {
+				for (int i = 0; i < vt.dim_count; i++) total *= vt.dimensions[i];
 			}
-			match(TOKEN_ASSIGN);
-			has_init = 1;
-			if (is_stat) {
-				int sign = 1;
-				if (cur_tok.type == TOKEN_MINUS) { sign = -1; match(TOKEN_MINUS); }
-				if (cur_tok.type == TOKEN_INT_LIT) {
-					init_int = sign * cur_tok.int_val;
-					init_float = (double)init_int;
-					match(TOKEN_INT_LIT);
+
+			while (cur_tok.type == TOKEN_LBRACKET) {
+				match(TOKEN_LBRACKET);
+				int dim_val = parse_array_bound();
+				vt.is_array = 1;
+				vt.dimensions[vt.dim_count++] = dim_val;
+				total *= dim_val;
+				match(TOKEN_RBRACKET);
+			}
+
+			int has_init = 0;
+			int init_int = 0;
+			double init_float = 0.0;
+			ASTNode* dyn_init_expr = NULL;
+
+			if (cur_tok.type == TOKEN_ASSIGN) {
+				if (is_ext) {
+					fprintf(stderr, "Semantic Error: Block-scope extern '%s' cannot have an initializer.\n", name);
+					exit(1);
 				}
-				else if (cur_tok.type == TOKEN_FLOAT_LIT) {
-					init_float = sign * cur_tok.float_val;
-					init_int = (int)init_float;
-					match(TOKEN_FLOAT_LIT);
+				match(TOKEN_ASSIGN);
+				has_init = 1;
+				if (is_stat) {
+					int sign = 1;
+					if (cur_tok.type == TOKEN_MINUS) { sign = -1; match(TOKEN_MINUS); }
+					if (cur_tok.type == TOKEN_INT_LIT) {
+						init_int = sign * cur_tok.int_val;
+						init_float = (double)init_int;
+						match(TOKEN_INT_LIT);
+					}
+					else if (cur_tok.type == TOKEN_FLOAT_LIT) {
+						init_float = sign * cur_tok.float_val;
+						init_int = (int)init_float;
+						match(TOKEN_FLOAT_LIT);
+					}
+					else {
+						fprintf(stderr, "Semantic Error: Static initializer must be constant.\n");
+						exit(1);
+					}
 				}
 				else {
-					fprintf(stderr, "Semantic Error: Static initializer must be constant.\n");
-					exit(1);
+					dyn_init_expr = parse_expr();
+				}
+			}
+
+			// Handle block-scope extern variable
+			if (is_ext) {
+				Symbol* existing = lookup_symbol(name);
+				if (!(existing && existing->is_global_var && existing->scope_level == 0)) {
+					Symbol* ext_sym = (Symbol*)calloc(1, sizeof(Symbol));
+					if (!ext_sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+					strcpy(ext_sym->name, name);
+					strcpy(ext_sym->asm_label, name);
+					ext_sym->type = vt;
+					ext_sym->is_local = 0;
+					ext_sym->is_extern = 1;
+					ext_sym->is_global_var = 1;
+					ext_sym->scope_level = 0;
+					ext_sym->next = sym_table;
+					sym_table = ext_sym;
 				}
 			}
 			else {
-				dyn_init_expr = parse_expr();
+				int var_size = 4;
+				if (vt.kind == TYPE_CHAR && vt.base_type == NULL) {
+					var_size = 1;
+				}
+				else if ((vt.kind == TYPE_STRUCT || vt.kind == TYPE_UNION) && vt.base_type == NULL) {
+					struct StructEnv* env = lookup_struct(vt.struct_name);
+					if (env) var_size = env->size;
+					else {
+						fprintf(stderr, "Semantic Error: Undefined struct/union '%s'.\n", vt.struct_name);
+						exit(1);
+					}
+				}
+
+				Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
+				if (!sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+				strcpy(sym->name, name);
+				sym->type = vt;
+				sym->scope_level = current_scope_level;
+				sym->is_register = is_reg;
+
+				if (is_stat) {
+					sym->is_local = 0;
+					sym->is_static = 1;
+					sym->is_global_var = 1;
+					sym->has_init = has_init;
+					sym->init_int = init_int;
+					sym->init_float = init_float;
+					sprintf(sym->asm_label, "static_%s_%s_%d", current_func_name, name, static_var_counter++);
+				}
+				else {
+					local_offset += (var_size * total);
+					if (local_offset > max_function_stack_bytes) {
+						max_function_stack_bytes = local_offset;
+					}
+					sym->is_local = 1;
+					sym->offset = -local_offset;
+				}
+
+				sym->next = sym_table;
+				sym_table = sym;
+
+				if (!is_stat && dyn_init_expr != NULL) {
+					ASTNode* id_node = create_node(AST_IDENT);
+					strcpy(id_node->name, name);
+					id_node->type = vt;
+
+					ASTNode* assign_node = create_node(AST_ASSIGN);
+					assign_node->left = id_node;
+					assign_node->right = dyn_init_expr;
+					assign_node->type = vt;
+
+					*init_tail = assign_node;
+					init_tail = &(assign_node->next);
+					has_any_dyn_init = 1;
+				}
+			}
+
+			if (cur_tok.type == TOKEN_COMMA) {
+				match(TOKEN_COMMA);
+				vt = parse_declarator(base_vt, name);
+			}
+			else {
+				break;
 			}
 		}
 
 		match(TOKEN_SEMI);
 
-		// Handle block-scope extern variable
-		if (is_ext) {
-			Symbol* existing = lookup_symbol(name);
-			if (existing && existing->is_global_var && existing->scope_level == 0) {
-				// Already declared/defined at file scope; reuse it cleanly
-				ASTNode* n = create_node(AST_VAR_DECL);
-				strcpy(n->name, name);
-				return n;
-			}
-			Symbol* ext_sym = (Symbol*)calloc(1, sizeof(Symbol));
-			strcpy(ext_sym->name, name);
-			strcpy(ext_sym->asm_label, name);
-			ext_sym->type = vt;
-			ext_sym->is_local = 0;
-			ext_sym->is_extern = 1;
-			ext_sym->is_global_var = 1;
-			ext_sym->scope_level = 0; // Persistent across function exit so emit_external_declarations() sees it
-			ext_sym->next = sym_table;
-			sym_table = ext_sym;
-
-			ASTNode* n = create_node(AST_VAR_DECL);
-			strcpy(n->name, name);
-			return n;
+		if (has_any_dyn_init) {
+			return init_block;
 		}
-
-		int var_size = 4;
-		if (vt.kind == TYPE_CHAR && vt.base_type == NULL) {
-			var_size = 1;
-		}
-		else if ((vt.kind == TYPE_STRUCT || vt.kind == TYPE_UNION) && vt.base_type == NULL) {
-			struct StructEnv* env = lookup_struct(vt.struct_name);
-			if (env) var_size = env->size;
-			else { exit(1); }
-		}
-
-		Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
-		strcpy(sym->name, name);
-		sym->type = vt;
-		sym->scope_level = current_scope_level;
-		sym->is_register = is_reg;
-
-		if (is_stat) {
-			sym->is_local = 0;
-			sym->is_static = 1;
-			sym->is_global_var = 1;
-			sym->has_init = has_init;
-			sym->init_int = init_int;
-			sym->init_float = init_float;
-			sprintf(sym->asm_label, "static_%s_%s_%d", current_func_name, name, static_var_counter++);
-		}
-		else {
-			local_offset += (var_size * total);
-			if (local_offset > max_function_stack_bytes) {
-				max_function_stack_bytes = local_offset;
-			}
-			sym->is_local = 1;
-			sym->offset = -local_offset;
-		}
-
-		sym->next = sym_table;
-		sym_table = sym;
-
-		if (!is_stat && dyn_init_expr != NULL) {
-			ASTNode* id_node = create_node(AST_IDENT);
-			strcpy(id_node->name, name);
-			id_node->type = vt;
-
-			ASTNode* assign_node = create_node(AST_ASSIGN);
-			assign_node->left = id_node;
-			assign_node->right = dyn_init_expr;
-			assign_node->type = vt;
-			return assign_node;
-		}
+		free(init_block);
 
 		ASTNode* n = create_node(AST_VAR_DECL);
 		strcpy(n->name, name);
@@ -1649,9 +1688,9 @@ ASTNode* parse_stmt(void) {
 		ASTNode* n = create_node(AST_SWITCH);
 		match(TOKEN_SWITCH);
 		match(TOKEN_LPAREN);
-		n->left = parse_expr(); // The central controlling condition expression
+		n->left = parse_expr();
 		match(TOKEN_RPAREN);
-		n->body = parse_stmt(); // Usually an AST_BLOCK containing cases
+		n->body = parse_stmt();
 		return n;
 	}
 
@@ -1685,21 +1724,14 @@ ASTNode* parse_stmt(void) {
 		match(TOKEN_COLON);
 		return n;
 	}
-
 	if (cur_tok.type == TOKEN_DEFAULT) {
 		ASTNode* n = create_node(AST_DEFAULT);
 		match(TOKEN_DEFAULT);
 		match(TOKEN_COLON);
 		return n;
 	}
-
 	ASTNode* n = parse_expr();
 	match(TOKEN_SEMI);
-
-	//if (n) {
-	//	n->next = NULL; // FIX: Force-clear lookahead pointers to prevent infinite block linking loops!
-	//}
-
 	return n;
 }
 

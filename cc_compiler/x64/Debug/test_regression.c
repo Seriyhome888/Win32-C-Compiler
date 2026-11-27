@@ -1420,6 +1420,45 @@ int test_bugfix_verify() {
 	return 0;
 }
 
+int g_m1 = 10, g_m2 = 20, * g_mp, g_marr[2];
+
+struct MultiMember {
+	int x, y;
+	char a, b;
+};
+
+int test_multi_declarators() {
+	int a = 1, b = 2, * p = &a, arr[2];
+	*p = 10;
+	arr[0] = 3;
+	arr[1] = 4;
+
+	static int s1 = 100, s2 = 200;
+	s1 += 1;
+	s2 += 2;
+
+	g_mp = &g_m1;
+	*g_mp += 5;
+	g_marr[1] = 30;
+
+	struct MultiMember mm;
+	mm.x = 7;
+	mm.y = 8;
+	mm.a = 'A';
+	mm.b = 'B';
+
+	if (a == 10 && b == 2 && (arr[0] + arr[1]) == 7 &&
+		s1 == 101 && s2 == 202 &&
+		g_m1 == 15 && g_m2 == 20 && g_marr[1] == 30 &&
+		mm.x == 7 && mm.y == 8 && mm.a == 'A' && mm.b == 'B' &&
+		sizeof(struct MultiMember) == 12) {
+		printf("Multi-Declarators (local, pointer, static, global, struct) PASSED!\n");
+		return 1;
+	}
+	printf("Multi-Declarators FAILED!\n");
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -1595,13 +1634,14 @@ int main()
 	passed += test_numeric_literals();
 	passed += test_enum_and_typedef_struct();
 	passed += test_bugfix_verify();
+	passed += test_multi_declarators();
 
-	if (passed == 14) {
-		printf("ALL 14 BUGFIX TESTS PASSED!\n");
+	if (passed == 15) {
+		printf("ALL 15 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 14 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 15 passed)\n", passed);
 		return 1;
 	}
 
