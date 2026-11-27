@@ -1459,6 +1459,45 @@ int test_multi_declarators() {
 	return 0;
 }
 
+int g_init_arr[4] = { 10, 20 }; // Trailing elements must zero-init to 0
+int g_unsized[] = { 3, 6, 9 };
+char g_greeting[] = "Hi!";
+struct Packet g_init_pkt = { 'A', 'B', 777, 2.5 };
+
+int test_initializer_lists() {
+	// 1. Global arrays, strings, and structs
+	if (g_init_arr[0] != 10 || g_init_arr[1] != 20 || g_init_arr[2] != 0 || g_init_arr[3] != 0 ||
+		sizeof(g_unsized) != 12 || g_unsized[2] != 9 ||
+		sizeof(g_greeting) != 4 || g_greeting[0] != 'H' || g_greeting[3] != '\0' ||
+		g_init_pkt.flag != 'A' || g_init_pkt.code != 'B' ||
+		g_init_pkt.payload != 777 || g_init_pkt.weight != 2.5) {
+		printf("Initializer Lists (Global) FAILED!\n");
+		return 0;
+	}
+
+	// 2. Local 1D, 2D (nested & flat), unsized, and partial zero-filled arrays
+	int local_arr[4] = { 5, 15 };
+	int mat[2][3] = { { 1, 2, 3 },{ 4, 5, 6 } };
+	int flat_mat[2][2] = { 10, 20, 30, 40 };
+	char word[5] = "OK";
+
+	// 3. Local struct and static array initializers
+	struct Packet lp = { 70, 71, 4096, 1.25 };
+	static int s_vals[3] = { 100, 200, 300 };
+	s_vals[1] += 50;
+
+	if (local_arr[0] == 5 && local_arr[1] == 15 && local_arr[2] == 0 && local_arr[3] == 0 &&
+		mat[1][2] == 6 && flat_mat[1][0] == 30 &&
+		word[0] == 'O' && word[1] == 'K' && word[2] == '\0' && word[4] == '\0' &&
+		lp.flag == 70 && lp.code == 71 && lp.payload == 4096 && lp.weight == 1.25 &&
+		s_vals[1] == 250) {
+		printf("Initializer Lists (Global, Local, 2D, Struct, Static, Zero-Fill) PASSED!\n");
+		return 1;
+	}
+	printf("Initializer Lists (Local) FAILED!\n");
+	return 0;
+}
+
 int main()
 {
 	int result;
@@ -1635,13 +1674,14 @@ int main()
 	passed += test_enum_and_typedef_struct();
 	passed += test_bugfix_verify();
 	passed += test_multi_declarators();
+	passed += test_initializer_lists();
 
-	if (passed == 15) {
-		printf("ALL 15 BUGFIX TESTS PASSED!\n");
+	if (passed == 16) {
+		printf("ALL 16 BUGFIX TESTS PASSED!\n");
 		return 0;
 	}
 	else {
-		printf("SOME TESTS FAILED (%d / 15 passed)\n", passed);
+		printf("SOME TESTS FAILED (%d / 16 passed)\n", passed);
 		return 1;
 	}
 

@@ -15,6 +15,291 @@ int current_scope_level = 0;
 static int anon_tag_counter = 0;
 
 void match(TokenType type);
+ASTNode* parse_expr(void);
+static ASTNode* ensure_float_node(ASTNode* node);
+static int parse_array_bound(void);
+
+static void append_init_elem(InitElem** list, int* count, int* cap, InitElem elem) {
+	if (*count >= *cap) {
+		*cap = (*cap == 0) ? 16 : (*cap * 2);
+		*list = (InitElem*)realloc(*list, sizeof(InitElem) * (*cap));
+		if (!*list) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+	}
+	(*list)[(*count)++] = elem;
+}
+
+// Parses '{ ... }' or single scalar/string initializer into either:
+//   - Flat InitElem array (for global/static .data storage, is_static_storage = 1)
+//   - AST_ASSIGN statements (for local stack storage, is_static_storage = 0)
+static void parse_init_recursive(
+	DataType type,
+	int byte_offset,
+	int is_static_storage,
+	InitElem** elems, int* elem_cnt, int* elem_cap,
+	ASTNode* root_ident,
+	ASTNode*** stmt_tail
+) {
+	// 1. Char array initialized by string literal: char buf[6] = "abc"; or char buf[] = "abc";
+	if (type.is_array && type.kind == TYPE_CHAR && type.base_type == NULL && cur_tok.type == TOKEN_STRING) {
+		int str_len = cur_tok.int_val;
+		int total_bytes = (type.dimensions[0] == 0) ? (str_len + 1) : get_type_size(type);
+		for (int i = 0; i < total_bytes; i++) {
+			int ch_val = (i < str_len) ? (unsigned char)cur_tok.lexeme[i] : 0;
+			if (is_static_storage) {
+				InitElem e = { byte_offset + i, 1, 0, ch_val, 0.0 };
+				append_init_elem(elems, elem_cnt, elem_cap, e);
+			}
+			else {
+				ASTNode* idx = create_node(AST_LITERAL);
+				idx->type.kind = TYPE_INT; idx->int_val = byte_offset + i;
+				ASTNode* acc = create_node(AST_ARRAY_ACCESS);
+				acc->left = root_ident; acc->right = idx; acc->type.kind = TYPE_CHAR;
+				ASTNode* val = create_node(AST_LITERAL);
+				val->type.kind = TYPE_INT; val->int_val = ch_val;
+				ASTNode* asg = create_node(AST_ASSIGN);
+				asg->left = acc; asg->right = val; asg->type.kind = TYPE_CHAR;
+				**stmt_tail = asg; *stmt_tail = &(asg->next);
+			}
+		}
+		match(TOKEN_STRING);
+		return;
+	}
+
+	// 2. Array type (1D or multi-dimensional, fixed or unsized outer bound)
+	if (type.is_array) {
+		int has_braces = (cur_tok.type == TOKEN_LBRACE);
+		if (has_braces) match(TOKEN_LBRACE);
+
+		int unsized = (type.dimensions[0] == 0);
+		int count = type.dimensions[0];
+		DataType sub_type = type;
+		if (sub_type.dim_count > 1) {
+			for (int d = 0; d < sub_type.dim_count - 1; d++)
+				sub_type.dimensions[d] = sub_type.dimensions[d + 1];
+			sub_type.dim_count--;
+		}
+		else {
+			sub_type.is_array = 0;
+			sub_type.dim_count = 0;
+		}
+		int stride = get_type_size(sub_type);
+
+		int i = 0;
+		while (unsized || i < count) {
+			if (has_braces && cur_tok.type == TOKEN_RBRACE) {
+				if (!unsized) {
+					int rem_bytes = (count - i) * stride;
+					if (is_static_storage) {
+						for (int b = 0; b < rem_bytes; b++) {
+							InitElem z = { byte_offset + i * stride + b, 1, 0, 0, 0.0 };
+							append_init_elem(elems, elem_cnt, elem_cap, z);
+						}
+					}
+				}
+				break;
+			}
+			parse_init_recursive(sub_type, byte_offset + i * stride, is_static_storage,
+				elems, elem_cnt, elem_cap, root_ident, stmt_tail);
+			i++;
+			if (cur_tok.type == TOKEN_COMMA) {
+				match(TOKEN_COMMA);
+				if (has_braces && cur_tok.type == TOKEN_RBRACE) break;
+			}
+			else if (!has_braces) {
+				break;
+			}
+		}
+
+		if (has_braces) {
+			if (cur_tok.type != TOKEN_RBRACE) {
+				fprintf(stderr, "Semantic Error: Too many initializers for array.\n");
+				exit(1);
+			}
+			match(TOKEN_RBRACE);
+		}
+		return;
+	}
+
+	// 3. Struct or Union type
+	if ((type.kind == TYPE_STRUCT || type.kind == TYPE_UNION) && type.base_type == NULL) {
+		struct StructEnv* env = lookup_struct(type.struct_name);
+		if (!env) { fprintf(stderr, "Semantic Error: Undefined struct/union '%s'.\n", type.struct_name); exit(1); }
+
+		int has_braces = (cur_tok.type == TOKEN_LBRACE);
+		if (has_braces) match(TOKEN_LBRACE);
+
+		Member* m = env->members;
+		while (m) {
+			if (has_braces && cur_tok.type == TOKEN_RBRACE) break;
+			parse_init_recursive(m->type, byte_offset + m->offset, is_static_storage,
+				elems, elem_cnt, elem_cap, root_ident, stmt_tail);
+			if (type.kind == TYPE_UNION) break; // C89 initializes first union member only
+			m = m->next;
+			if (m && cur_tok.type == TOKEN_COMMA) {
+				match(TOKEN_COMMA);
+				if (has_braces && cur_tok.type == TOKEN_RBRACE) break;
+			}
+			else if (!has_braces) {
+				break;
+			}
+		}
+
+		if (has_braces) {
+			if (cur_tok.type != TOKEN_RBRACE) {
+				fprintf(stderr, "Semantic Error: Excess elements in struct/union initializer.\n");
+				exit(1);
+			}
+			match(TOKEN_RBRACE);
+		}
+		return;
+	}
+
+	// 4. Scalar leaf (int, char, float, pointer)
+	int optional_brace = (cur_tok.type == TOKEN_LBRACE);
+	if (optional_brace) match(TOKEN_LBRACE);
+
+	if (is_static_storage) {
+		int sign = 1;
+		if (cur_tok.type == TOKEN_MINUS) { sign = -1; match(TOKEN_MINUS); }
+		InitElem e = { 0 };
+		e.offset = byte_offset;
+		e.size = (type.kind == TYPE_CHAR && type.base_type == NULL) ? 1 : 4;
+
+		if (cur_tok.type == TOKEN_INT_LIT) {
+			e.int_val = sign * cur_tok.int_val;
+			e.float_val = (double)e.int_val;
+			e.is_float = (type.kind == TYPE_FLOAT && type.base_type == NULL);
+			match(TOKEN_INT_LIT);
+		}
+		else if (cur_tok.type == TOKEN_FLOAT_LIT) {
+			e.float_val = sign * cur_tok.float_val;
+			e.int_val = (int)e.float_val;
+			e.is_float = (type.kind == TYPE_FLOAT && type.base_type == NULL);
+			match(TOKEN_FLOAT_LIT);
+		}
+		else if (cur_tok.type == TOKEN_IDENT) {
+			Symbol* sym = lookup_symbol(cur_tok.lexeme);
+			if (sym && sym->is_enum_const) {
+				e.int_val = sign * sym->init_int;
+				e.float_val = (double)e.int_val;
+				match(TOKEN_IDENT);
+			}
+			else {
+				fprintf(stderr, "Semantic Error: Non-constant initializer '%s'.\n", cur_tok.lexeme);
+				exit(1);
+			}
+		}
+		else {
+			fprintf(stderr, "Semantic Error: Constant scalar initializer expected.\n");
+			exit(1);
+		}
+		append_init_elem(elems, elem_cnt, elem_cap, e);
+	}
+	else {
+		// Local stack variable: assign *(type*)((char*)&root_ident + byte_offset) = expr
+		ASTNode* rhs = parse_expr();
+		if (type.kind == TYPE_FLOAT && type.base_type == NULL) rhs = ensure_float_node(rhs);
+
+		ASTNode* addr = create_node(AST_UNOP);
+		addr->op = TOKEN_AMP; addr->left = root_ident;
+		addr->type = make_pointer_to(root_ident->type);
+
+		if (byte_offset > 0) {
+			ASTNode* cast_char_p = create_node(AST_UNOP);
+			cast_char_p->op = TOKEN_TYPEDEF;
+			DataType cp = { 0 }; cp.kind = TYPE_CHAR;
+			cast_char_p->type = make_pointer_to(cp);
+			cast_char_p->left = addr;
+
+			ASTNode* off_lit = create_node(AST_LITERAL);
+			off_lit->type.kind = TYPE_INT; off_lit->int_val = byte_offset;
+
+			ASTNode* add = create_node(AST_BINOP);
+			add->op = TOKEN_PLUS; add->left = cast_char_p; add->right = off_lit;
+			add->type = cast_char_p->type;
+			addr = add;
+		}
+
+		ASTNode* deref = create_node(AST_UNOP);
+		deref->op = TOKEN_STAR; deref->left = addr; deref->type = type;
+
+		ASTNode* asg = create_node(AST_ASSIGN);
+		asg->left = deref; asg->right = rhs; asg->type = type;
+		**stmt_tail = asg; *stmt_tail = &(asg->next);
+	}
+
+	if (optional_brace) match(TOKEN_RBRACE);
+}
+
+static void parse_array_dimensions(DataType* vt) {
+	while (cur_tok.type == TOKEN_LBRACKET) {
+		match(TOKEN_LBRACKET);
+		vt->is_array = 1;
+		if (cur_tok.type == TOKEN_RBRACKET) {
+			if (vt->dim_count != 0) {
+				fprintf(stderr, "Syntax Error: Only the first array dimension may be omitted.\n");
+				exit(1);
+			}
+			vt->dimensions[vt->dim_count++] = 0; // Deduced from initializer
+		}
+		else {
+			vt->dimensions[vt->dim_count++] = parse_array_bound();
+		}
+		match(TOKEN_RBRACKET);
+	}
+}
+
+// Emits zero-initialization assignments for every 4-byte or 1-byte slot of a local aggregate
+static void emit_local_zero_fill(ASTNode* root_ident, int total_bytes, ASTNode*** stmt_tail) {
+	int offset = 0;
+	while (offset < total_bytes) {
+		int chunk = (total_bytes - offset >= 4) ? 4 : 1;
+		DataType chunk_type = { 0 };
+		chunk_type.kind = (chunk == 4) ? TYPE_INT : TYPE_CHAR;
+
+		ASTNode* addr = create_node(AST_UNOP);
+		addr->op = TOKEN_AMP;
+		addr->left = root_ident;
+		addr->type = make_pointer_to(root_ident->type);
+
+		if (offset > 0) {
+			ASTNode* cast_cp = create_node(AST_UNOP);
+			cast_cp->op = TOKEN_TYPEDEF;
+			DataType cp = { 0 }; cp.kind = TYPE_CHAR;
+			cast_cp->type = make_pointer_to(cp);
+			cast_cp->left = addr;
+
+			ASTNode* off_lit = create_node(AST_LITERAL);
+			off_lit->type.kind = TYPE_INT;
+			off_lit->int_val = offset;
+
+			ASTNode* add = create_node(AST_BINOP);
+			add->op = TOKEN_PLUS;
+			add->left = cast_cp;
+			add->right = off_lit;
+			add->type = cast_cp->type;
+			addr = add;
+		}
+
+		ASTNode* deref = create_node(AST_UNOP);
+		deref->op = TOKEN_STAR;
+		deref->left = addr;
+		deref->type = chunk_type;
+
+		ASTNode* zero = create_node(AST_LITERAL);
+		zero->type.kind = TYPE_INT;
+		zero->int_val = 0;
+
+		ASTNode* asg = create_node(AST_ASSIGN);
+		asg->left = deref;
+		asg->right = zero;
+		asg->type = chunk_type;
+
+		**stmt_tail = asg;
+		*stmt_tail = &(asg->next);
+		offset += chunk;
+	}
+}
 
 static void register_enum_constant(const char* name, int value) {
 	Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
@@ -409,7 +694,6 @@ ASTNode* create_node(ASTNodeKind kind) {
 }
 
 // Forward Grammar Declarations
-ASTNode* parse_expr(void);
 ASTNode* parse_stmt(void);
 
 ASTNode* parse_primary(void) {
@@ -875,6 +1159,20 @@ ASTNode* parse_ternary(void) {
 	return cond;
 }
 
+static ASTNode* clone_ast(ASTNode* src) {
+	if (!src) return NULL;
+	ASTNode* dst = (ASTNode*)malloc(sizeof(ASTNode));
+	if (!dst) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
+	*dst = *src;
+	dst->left = clone_ast(src->left);
+	dst->right = clone_ast(src->right);
+	dst->cond = clone_ast(src->cond);
+	dst->body = clone_ast(src->body);
+	dst->else_body = clone_ast(src->else_body);
+	dst->next = clone_ast(src->next);
+	return dst;
+}
+
 ASTNode* parse_expr(void) {
 	ASTNode* n = parse_ternary();
 
@@ -909,7 +1207,7 @@ ASTNode* parse_expr(void) {
 			else if (op_type == TOKEN_LSHIFT_ASSIGN) math_node->op = TOKEN_LSHIFT;
 			else if (op_type == TOKEN_RSHIFT_ASSIGN) math_node->op = TOKEN_RSHIFT;
 
-			math_node->left = n;
+			math_node->left = clone_ast(n);
 			math_node->right = right_expr;
 
 			if (math_node->left->type.kind == TYPE_FLOAT || math_node->right->type.kind == TYPE_FLOAT) {
@@ -1167,16 +1465,14 @@ ASTNode* parse_program(void) {
 	// 7. BRANCH A: GLOBAL / STATIC / EXTERN VARIABLE DECLARATION (not followed by '(')
 	if (cur_tok.type != TOKEN_LPAREN) {
 		while (1) {
-			while (cur_tok.type == TOKEN_LBRACKET) {
-				match(TOKEN_LBRACKET);
-				decl_type.is_array = 1;
-				decl_type.dimensions[decl_type.dim_count++] = parse_array_bound();
-				match(TOKEN_RBRACKET);
-			}
+			parse_array_dimensions(&decl_type);
 
 			int has_init = 0;
 			int init_int = 0;
 			double init_float = 0.0;
+			InitElem* init_elems = NULL;
+			int init_elem_cnt = 0;
+			int init_elem_cap = 0;
 
 			if (cur_tok.type == TOKEN_ASSIGN) {
 				if (is_file_extern) {
@@ -1186,26 +1482,59 @@ ASTNode* parse_program(void) {
 				match(TOKEN_ASSIGN);
 				has_init = 1;
 
-				int sign = 1;
-				if (cur_tok.type == TOKEN_MINUS) {
-					sign = -1;
-					match(TOKEN_MINUS);
-				}
+				int is_agg = (decl_type.is_array ||
+					((decl_type.kind == TYPE_STRUCT || decl_type.kind == TYPE_UNION) && decl_type.base_type == NULL));
 
-				if (cur_tok.type == TOKEN_INT_LIT) {
-					init_int = sign * cur_tok.int_val;
-					init_float = (double)init_int;
-					match(TOKEN_INT_LIT);
-				}
-				else if (cur_tok.type == TOKEN_FLOAT_LIT) {
-					init_float = sign * cur_tok.float_val;
-					init_int = (int)init_float;
-					match(TOKEN_FLOAT_LIT);
+				if (is_agg || cur_tok.type == TOKEN_LBRACE) {
+					ASTNode** dummy_tail = NULL;
+					parse_init_recursive(decl_type, 0, 1, &init_elems, &init_elem_cnt, &init_elem_cap, NULL, &dummy_tail);
+
+					// Deduce outer dimension if declared as T arr[] = ...
+					if (decl_type.is_array && decl_type.dimensions[0] == 0) {
+						DataType sub = decl_type;
+						if (sub.dim_count > 1) {
+							for (int d = 0; d < sub.dim_count - 1; d++) sub.dimensions[d] = sub.dimensions[d + 1];
+							sub.dim_count--;
+						}
+						else {
+							sub.is_array = 0;
+							sub.dim_count = 0;
+						}
+						int sub_sz = get_type_size(sub);
+						int max_end = 0;
+						for (int k = 0; k < init_elem_cnt; k++) {
+							int end = init_elems[k].offset + init_elems[k].size;
+							if (end > max_end) max_end = end;
+						}
+						decl_type.dimensions[0] = (max_end + sub_sz - 1) / sub_sz;
+					}
 				}
 				else {
-					fprintf(stderr, "Semantic Error: Global variable '%s' requires a constant initializer.\n", name);
-					exit(1);
+					int sign = 1;
+					if (cur_tok.type == TOKEN_MINUS) {
+						sign = -1;
+						match(TOKEN_MINUS);
+					}
+					if (cur_tok.type == TOKEN_INT_LIT) {
+						init_int = sign * cur_tok.int_val;
+						init_float = (double)init_int;
+						match(TOKEN_INT_LIT);
+					}
+					else if (cur_tok.type == TOKEN_FLOAT_LIT) {
+						init_float = sign * cur_tok.float_val;
+						init_int = (int)init_float;
+						match(TOKEN_FLOAT_LIT);
+					}
+					else {
+						fprintf(stderr, "Semantic Error: Global variable '%s' requires a constant initializer.\n", name);
+						exit(1);
+					}
 				}
+			}
+
+			if (decl_type.is_array && decl_type.dimensions[0] == 0 && !is_file_extern) {
+				fprintf(stderr, "Semantic Error: Array '%s' has incomplete size.\n", name);
+				exit(1);
 			}
 
 			Symbol* existing = lookup_symbol(name);
@@ -1216,6 +1545,8 @@ ASTNode* parse_program(void) {
 					existing->has_init = has_init;
 					existing->init_int = init_int;
 					existing->init_float = init_float;
+					existing->init_elems = init_elems;
+					existing->init_elem_count = init_elem_cnt;
 					existing->type = decl_type;
 				}
 			}
@@ -1232,6 +1563,8 @@ ASTNode* parse_program(void) {
 				g_sym->has_init = has_init;
 				g_sym->init_int = init_int;
 				g_sym->init_float = init_float;
+				g_sym->init_elems = init_elems;
+				g_sym->init_elem_count = init_elem_cnt;
 				g_sym->scope_level = 0;
 				g_sym->next = sym_table;
 				sym_table = g_sym;
@@ -1472,25 +1805,16 @@ ASTNode* parse_stmt(void) {
 		int has_any_dyn_init = 0;
 
 		while (1) {
-			int total = 1;
-
-			if (vt.is_array) {
-				for (int i = 0; i < vt.dim_count; i++) total *= vt.dimensions[i];
-			}
-
-			while (cur_tok.type == TOKEN_LBRACKET) {
-				match(TOKEN_LBRACKET);
-				int dim_val = parse_array_bound();
-				vt.is_array = 1;
-				vt.dimensions[vt.dim_count++] = dim_val;
-				total *= dim_val;
-				match(TOKEN_RBRACKET);
-			}
+			parse_array_dimensions(&vt);
 
 			int has_init = 0;
 			int init_int = 0;
 			double init_float = 0.0;
+			InitElem* init_elems = NULL;
+			int init_elem_cnt = 0;
+			int init_elem_cap = 0;
 			ASTNode* dyn_init_expr = NULL;
+			int is_brace_or_str_init = 0;
 
 			if (cur_tok.type == TOKEN_ASSIGN) {
 				if (is_ext) {
@@ -1499,26 +1823,59 @@ ASTNode* parse_stmt(void) {
 				}
 				match(TOKEN_ASSIGN);
 				has_init = 1;
+
+				int is_agg = (vt.is_array ||
+					((vt.kind == TYPE_STRUCT || vt.kind == TYPE_UNION) && vt.base_type == NULL));
+
 				if (is_stat) {
-					int sign = 1;
-					if (cur_tok.type == TOKEN_MINUS) { sign = -1; match(TOKEN_MINUS); }
-					if (cur_tok.type == TOKEN_INT_LIT) {
-						init_int = sign * cur_tok.int_val;
-						init_float = (double)init_int;
-						match(TOKEN_INT_LIT);
-					}
-					else if (cur_tok.type == TOKEN_FLOAT_LIT) {
-						init_float = sign * cur_tok.float_val;
-						init_int = (int)init_float;
-						match(TOKEN_FLOAT_LIT);
+					if (is_agg || cur_tok.type == TOKEN_LBRACE) {
+						ASTNode** dummy_tail = NULL;
+						parse_init_recursive(vt, 0, 1, &init_elems, &init_elem_cnt, &init_elem_cap, NULL, &dummy_tail);
+						if (vt.is_array && vt.dimensions[0] == 0) {
+							DataType sub = vt;
+							if (sub.dim_count > 1) {
+								for (int d = 0; d < sub.dim_count - 1; d++) sub.dimensions[d] = sub.dimensions[d + 1];
+								sub.dim_count--;
+							}
+							else {
+								sub.is_array = 0;
+								sub.dim_count = 0;
+							}
+							int sub_sz = get_type_size(sub);
+							int max_end = 0;
+							for (int k = 0; k < init_elem_cnt; k++) {
+								int end = init_elems[k].offset + init_elems[k].size;
+								if (end > max_end) max_end = end;
+							}
+							vt.dimensions[0] = (max_end + sub_sz - 1) / sub_sz;
+						}
 					}
 					else {
-						fprintf(stderr, "Semantic Error: Static initializer must be constant.\n");
-						exit(1);
+						int sign = 1;
+						if (cur_tok.type == TOKEN_MINUS) { sign = -1; match(TOKEN_MINUS); }
+						if (cur_tok.type == TOKEN_INT_LIT) {
+							init_int = sign * cur_tok.int_val;
+							init_float = (double)init_int;
+							match(TOKEN_INT_LIT);
+						}
+						else if (cur_tok.type == TOKEN_FLOAT_LIT) {
+							init_float = sign * cur_tok.float_val;
+							init_int = (int)init_float;
+							match(TOKEN_FLOAT_LIT);
+						}
+						else {
+							fprintf(stderr, "Semantic Error: Static initializer must be constant.\n");
+							exit(1);
+						}
 					}
 				}
 				else {
-					dyn_init_expr = parse_expr();
+					if (is_agg || cur_tok.type == TOKEN_LBRACE) {
+						is_brace_or_str_init = 1;
+					}
+					else {
+						dyn_init_expr = parse_expr();
+					}
 				}
 			}
 
@@ -1540,19 +1897,6 @@ ASTNode* parse_stmt(void) {
 				}
 			}
 			else {
-				int var_size = 4;
-				if (vt.kind == TYPE_CHAR && vt.base_type == NULL) {
-					var_size = 1;
-				}
-				else if ((vt.kind == TYPE_STRUCT || vt.kind == TYPE_UNION) && vt.base_type == NULL) {
-					struct StructEnv* env = lookup_struct(vt.struct_name);
-					if (env) var_size = env->size;
-					else {
-						fprintf(stderr, "Semantic Error: Undefined struct/union '%s'.\n", vt.struct_name);
-						exit(1);
-					}
-				}
-
 				Symbol* sym = (Symbol*)calloc(1, sizeof(Symbol));
 				if (!sym) { fprintf(stderr, "Fatal Error: Out of memory.\n"); exit(1); }
 				strcpy(sym->name, name);
@@ -1561,39 +1905,105 @@ ASTNode* parse_stmt(void) {
 				sym->is_register = is_reg;
 
 				if (is_stat) {
+					if (vt.is_array && vt.dimensions[0] == 0) {
+						fprintf(stderr, "Semantic Error: Static array '%s' has incomplete size.\n", name);
+						exit(1);
+					}
 					sym->is_local = 0;
 					sym->is_static = 1;
 					sym->is_global_var = 1;
 					sym->has_init = has_init;
 					sym->init_int = init_int;
 					sym->init_float = init_float;
+					sym->init_elems = init_elems;
+					sym->init_elem_count = init_elem_cnt;
 					sprintf(sym->asm_label, "static_%s_%s_%d", current_func_name, name, static_var_counter++);
+					sym->next = sym_table;
+					sym_table = sym;
+				}
+				else if (is_brace_or_str_init) {
+					// Parse local initializer list first so unsized arrays (int a[] = {1,2,3};) deduce dimensions[0]
+					ASTNode* sub_block = create_node(AST_BLOCK);
+					ASTNode** sub_tail = &(sub_block->body);
+
+					ASTNode* root_id = create_node(AST_IDENT);
+					strcpy(root_id->name, name);
+					root_id->type = vt;
+
+					// Temporarily register symbol so nested AST nodes can resolve it
+					sym->is_local = 1;
+					sym->next = sym_table;
+					sym_table = sym;
+
+					parse_init_recursive(vt, 0, 0, NULL, NULL, NULL, root_id, &sub_tail);
+
+					// Deduce unsized outer dimension from generated AST assignments
+					if (vt.is_array && vt.dimensions[0] == 0) {
+						DataType sub = vt;
+						if (sub.dim_count > 1) {
+							for (int d = 0; d < sub.dim_count - 1; d++) sub.dimensions[d] = sub.dimensions[d + 1];
+							sub.dim_count--;
+						}
+						else {
+							sub.is_array = 0;
+							sub.dim_count = 0;
+						}
+						int sub_sz = get_type_size(sub);
+						int elem_cnt = 0;
+						for (ASTNode* s = sub_block->body; s; s = s->next) elem_cnt++;
+						int total_bytes = elem_cnt * ((vt.kind == TYPE_CHAR && vt.dim_count == 1) ? 1 : 4);
+						vt.dimensions[0] = (total_bytes + sub_sz - 1) / sub_sz;
+						sym->type = vt;
+						root_id->type = vt;
+					}
+
+					int total_bytes = get_type_size(vt);
+					local_offset += total_bytes;
+					if (local_offset > max_function_stack_bytes) {
+						max_function_stack_bytes = local_offset;
+					}
+					sym->offset = -local_offset;
+
+					// Zero-fill entire local aggregate first so omitted elements are 0
+					emit_local_zero_fill(root_id, total_bytes, &init_tail);
+
+					// Append element assignments after zero-fill
+					if (sub_block->body) {
+						*init_tail = sub_block->body;
+						while (*init_tail) init_tail = &((*init_tail)->next);
+					}
+					free(sub_block);
+					has_any_dyn_init = 1;
 				}
 				else {
-					local_offset += (var_size * total);
+					if (vt.is_array && vt.dimensions[0] == 0) {
+						fprintf(stderr, "Semantic Error: Local array '%s' has incomplete size.\n", name);
+						exit(1);
+					}
+					int total_bytes = get_type_size(vt);
+					local_offset += total_bytes;
 					if (local_offset > max_function_stack_bytes) {
 						max_function_stack_bytes = local_offset;
 					}
 					sym->is_local = 1;
 					sym->offset = -local_offset;
-				}
+					sym->next = sym_table;
+					sym_table = sym;
 
-				sym->next = sym_table;
-				sym_table = sym;
+					if (dyn_init_expr != NULL) {
+						ASTNode* id_node = create_node(AST_IDENT);
+						strcpy(id_node->name, name);
+						id_node->type = vt;
 
-				if (!is_stat && dyn_init_expr != NULL) {
-					ASTNode* id_node = create_node(AST_IDENT);
-					strcpy(id_node->name, name);
-					id_node->type = vt;
+						ASTNode* assign_node = create_node(AST_ASSIGN);
+						assign_node->left = id_node;
+						assign_node->right = dyn_init_expr;
+						assign_node->type = vt;
 
-					ASTNode* assign_node = create_node(AST_ASSIGN);
-					assign_node->left = id_node;
-					assign_node->right = dyn_init_expr;
-					assign_node->type = vt;
-
-					*init_tail = assign_node;
-					init_tail = &(assign_node->next);
-					has_any_dyn_init = 1;
+						*init_tail = assign_node;
+						init_tail = &(assign_node->next);
+						has_any_dyn_init = 1;
+					}
 				}
 			}
 

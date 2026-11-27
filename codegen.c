@@ -135,7 +135,34 @@ void emit_global_variables(void) {
 
 			if (sym->type.is_array || sym->type.kind == TYPE_STRUCT || sym->type.kind == TYPE_UNION) {
 				int total_bytes = get_type_size(sym->type);
-				printf("%s DB %d DUP(0)\n", sym->asm_label, total_bytes);
+				if (sym->init_elem_count > 0) {
+					// Build a byte-accurate image of the aggregate, zero-initialized by default
+					unsigned char* raw = (unsigned char*)calloc(1, total_bytes);
+					for (int i = 0; i < sym->init_elem_count; i++) {
+						InitElem e = sym->init_elems[i];
+						if (e.offset + e.size <= total_bytes) {
+							if (e.size == 1) {
+								raw[e.offset] = (unsigned char)(e.int_val & 0xFF);
+							}
+							else if (e.is_float) {
+								float f = (float)e.float_val;
+								memcpy(raw + e.offset, &f, 4);
+							}
+							else {
+								memcpy(raw + e.offset, &e.int_val, 4);
+							}
+						}
+					}
+					printf("%s DB ", sym->asm_label);
+					for (int b = 0; b < total_bytes; b++) {
+						printf("%s%u", (b > 0) ? ", " : "", (unsigned int)raw[b]);
+					}
+					printf("\n");
+					free(raw);
+				}
+				else {
+					printf("%s DB %d DUP(0)\n", sym->asm_label, total_bytes);
+				}
 			}
 			else if (sym->type.kind == TYPE_CHAR && sym->type.base_type == NULL) {
 				printf("%s DB %d\n", sym->asm_label, sym->has_init ? (sym->init_int & 0xFF) : 0);

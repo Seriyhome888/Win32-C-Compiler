@@ -60,7 +60,8 @@ typedef enum {
 	AST_CALL, AST_UNION_DECL,
 	AST_SWITCH, AST_CASE, AST_DEFAULT,
 	AST_POST_INC, AST_POST_DEC,
-	AST_TERNARY
+	AST_TERNARY,
+	AST_INIT_LIST
 } ASTNodeKind;
 
 typedef struct ASTNode {
@@ -78,6 +79,14 @@ typedef struct ASTNode {
 	struct ASTNode* else_body;
 	struct ASTNode* next;
 } ASTNode;
+
+typedef struct {
+	int offset;         // Byte offset from variable base
+	int size;           // 1 (char), 4 (int/float/ptr)
+	int is_float;       // 1 if float bit-pattern
+	int int_val;        // Integer/char value or float IEEE-754 bits
+	double float_val;   // Float value for REAL4 emission
+} InitElem;
 
 typedef struct Symbol {
 	char name[64];
@@ -97,6 +106,8 @@ typedef struct Symbol {
 	int is_register;       // 1 if declared with 'register' storage class
 	int is_enum_const;	   // 1 if symbol is an enum constant (value stored in init_int)	
 	struct Symbol* next;
+	InitElem* init_elems;   // Dynamically allocated flat initializer list for .data
+	int init_elem_count;
 } Symbol;
 
 typedef struct Member {
