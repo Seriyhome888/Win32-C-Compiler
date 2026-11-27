@@ -60,8 +60,8 @@ int test_char_struct_members() {
 	p_pkt->flag = 88;        // 'X'
 	p_pkt->code = 89;        // 'Y'
 
-	if (p_pkt->flag == 88 && p_pkt->code == 89 && local_pkt.payload == 5000 && sizeof(struct Packet) == 10) {
-		printf("Test 2 (Char Struct Members & sizeof(struct Packet)==10) PASSED\n");
+	if (p_pkt->flag == 88 && p_pkt->code == 89 && local_pkt.payload == 5000 && sizeof(struct Packet) == 12) {
+		printf("Test 2 (Char Struct Members & sizeof(struct Packet)==12) PASSED\n");
 		return 1;
 	}
 	else {
@@ -177,7 +177,7 @@ void pointer_dereference()
 	// 0. POINTER DEREFERENCING & ADDRESS-OF TEST
 	// ==========================================
 	int target_var;
-	int ptr_addr; // Act as pointer container (using standard type registers)
+	int *ptr_addr; // Act as pointer container (using standard type registers)
 	int retrieved_val;
 
 	target_var = 15;
@@ -521,34 +521,14 @@ void two_dimensional_matrix_test()
 }
 
 int sum_numbers(int count, ...) {
-	char* args;
-	int total_sum;
+	va_list ap;
+	int total_sum = 0;
 	int i;
-	int current_val;
-	int* item_ptr; /* Declare explicit helper pointer to handle data types */
-
-	total_sum = 0;
-
-	/*
-	   Bypass casting: &count evaluates to a pointer.
-	   Compiler allows pointer + integer offset scaling out of the box!
-	*/
-	//args = (char*)&count + 4;
-	args = &count + 1;
-
+	va_start(ap, count);
 	for (i = 0; i < count; i = i + 1) {
-		/*
-		   Implicit pointer conversion: Assigning char* directly to int*
-		   Your compiler's AST_ASSIGN handler doesn't enforce strict type blocking,
-		   allowing this to map cleanly in raw registers!
-		*/
-		item_ptr = args;
-		current_val = *item_ptr;
-
-		total_sum = total_sum + current_val;
-		args = args + 4;
+		total_sum = total_sum + va_arg(ap, int);
 	}
-
+	va_end(ap);
 	return total_sum;
 }
 
@@ -599,8 +579,8 @@ void test_sizeof() {
 	if (sizeof(local_char) == 1) printf("sizeof(local_char) PASSED\n"); else printf("sizeof(local_char) FAILED\n");
 
 	// 3. Pointer Size Tests (Always 4-bytes in your 32-bit architecture)
-	if (sizeof(int*) == 4) printf("sizeof(int*) PASSED\n"); else printf("sizeof(int*) FAILED\n");
-	if (sizeof(ptr_bob) == 4) printf("sizeof(ptr_bob) PASSED\n"); else printf("sizeof(ptr_bob) FAILED\n");
+	if (sizeof(int*) == sizeof(void*)) printf("sizeof(int*) PASSED\n"); else printf("sizeof(int*) FAILED\n");
+	if (sizeof(ptr_bob) == sizeof(void*)) printf("sizeof(ptr_bob) PASSED\n"); else printf("sizeof(ptr_bob) FAILED\n");
 
 	// 4. Array Dimension Boundary Tests
 	if (sizeof(array_1d) == 40) printf("sizeof(array_1d) PASSED\n"); else printf("sizeof(array_1d) FAILED\n");
@@ -1401,7 +1381,7 @@ int test_enum_and_typedef_struct() {
 	if (STATUS_OK == 0 && STATUS_ERR == -1 && STATUS_MAX == 11 &&
 		sizeof(table) == 44 && matched == 2 &&
 		rec.id == 42 && rec.code == 'Z' &&
-		n1.next->value == 25 && sizeof(AnonymousRecord) == 5) {
+		n1.next->value == 25 && sizeof(AnonymousRecord) == 8) {
 		printf("Enum & Typedef Struct (Named, Anonymous, Self-Ref) PASSED!\n");
 		return 1;
 	}

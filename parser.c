@@ -602,18 +602,20 @@ ASTNode* parse_unary(void) {
 		match(TOKEN_LPAREN);
 
 		// Case A: A primitive keyword or type alias name is passed (e.g., sizeof(int) or sizeof(PointType))
-		if (is_type_name(cur_tok)) {
-			DataType vt = parse_base_type();
-			while (cur_tok.type == TOKEN_STAR) {
-				match(TOKEN_STAR);
-				DataType* base = (DataType*)calloc(1, sizeof(DataType));
-				*base = vt;
-				memset(&vt, 0, sizeof(vt));
-				vt.kind = TYPE_POINTER;
-				vt.base_type = base;
+		if (is_type_name(cur_tok) || cur_tok.type == TOKEN_VOID) {
+			DataType vt;
+			memset(&vt, 0, sizeof(vt));
+			if (cur_tok.type == TOKEN_VOID) {
+				vt.kind = TYPE_INT;
+				match(TOKEN_VOID);
 			}
+			else {
+				vt = parse_base_type();
+			}
+			vt = parse_abstract_declarator(vt);
 			size_result = get_type_size(vt);
 		}
+
 		// Case B: An active expression or variable identifier is passed (e.g., sizeof(bob.age))
 		else {
 			ASTNode* expr_node = parse_expr();
@@ -943,6 +945,16 @@ ASTNode* parse_expr(void) {
 	return n;
 }
 
+static int get_type_alignment(DataType type) {
+	if (type.kind == TYPE_POINTER || type.base_type != NULL) return 4;
+	if (type.kind == TYPE_CHAR) return 1;
+	if (type.kind == TYPE_STRUCT || type.kind == TYPE_UNION) {
+		struct StructEnv* env = lookup_struct(type.struct_name);
+		return (env && env->alignment > 0) ? env->alignment : 4;
+	}
+	return 4; // int, float
+}
+
 ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 	match(TOKEN_LBRACE);
 
@@ -956,6 +968,7 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 
 	int total_size = 0;
 	int current_offset = 0;
+	int max_align = 1;
 
 	while (cur_tok.type != TOKEN_RBRACE && cur_tok.type != TOKEN_EOF) {
 		// 1. Parse any valid base type (int, float, char, struct/union, typedef)
@@ -965,7 +978,7 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 		char m_name[64];
 		m_type = parse_declarator(m_type, m_name);
 
-		// 4. Support fixed-size array members inside structs/unions
+		// 3. Support fixed-size array members inside structs/unions
 		while (cur_tok.type == TOKEN_LBRACKET) {
 			match(TOKEN_LBRACKET);
 			m_type.is_array = 1;
@@ -976,6 +989,10 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 		match(TOKEN_SEMI);
 
 		int member_size = get_type_size(m_type);
+		int member_align = get_type_alignment(m_type);
+		if (member_align > max_align) {
+			max_align = member_align;
+		}
 
 		Member* m = (Member*)calloc(1, sizeof(Member));
 		if (!m) {
@@ -992,6 +1009,7 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 			}
 		}
 		else {
+			current_offset = (current_offset + member_align - 1) & ~(member_align - 1);
 			m->offset = current_offset;
 			current_offset += member_size;
 			total_size = current_offset;
@@ -1002,7 +1020,8 @@ ASTNode* parse_struct_or_union_with_tag(int is_union, const char* name) {
 	}
 	match(TOKEN_RBRACE);
 
-	env->size = total_size;
+	env->alignment = max_align;
+	env->size = (total_size + max_align - 1) & ~(max_align - 1);
 	env->next = struct_table;
 	struct_table = env;
 

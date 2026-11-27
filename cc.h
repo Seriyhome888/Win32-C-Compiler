@@ -110,6 +110,7 @@ typedef struct StructEnv {
 	char name[64];
 	Member* members;
 	int size;
+	int alignment;
 	struct StructEnv* next;
 } StructEnv;
 

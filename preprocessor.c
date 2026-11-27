@@ -1,4 +1,4 @@
-﻿#ifndef _CRT_SECURE_NO_WARNINGS
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
@@ -7,48 +7,40 @@
 #include <string.h>
 #include <ctype.h>
 
-#define MAX_LINE_LEN 512
+#define MAX_LINE_LEN 2048
 #define MAX_NAME_LEN 64
 #define MAX_IF_DEPTH 32
-
-// Struct to store defined text-substitution macros
 #define MAX_PARAMS 8
 
 typedef struct MacroNode {
 	char name[MAX_NAME_LEN];
 	char replacement[MAX_LINE_LEN];
-
-	// Advanced Parameter Tracking Properties
-	int is_function_like;                  // 0 = Object-like (#define PI 3.14), 1 = Function-like (#define ADD(x,y))
+	int is_function_like;
 	char param_names[MAX_PARAMS][MAX_NAME_LEN];
 	int param_count;
-
 	struct MacroNode* next;
 } MacroNode;
 
 static MacroNode* macro_head = NULL;
 
-// Structural stack frames to manage nested #ifdef / #ifndef blocks
+// Tracks nested #if / #ifdef / #ifndef / #elif / #else / #endif blocks
 typedef struct {
-	int condition_met;  // 1 if this block's condition evaluates to true, 0 if false
-	int else_seen;      // 1 if we have already encountered a #else inside this block frame
+	int parent_active;  // 1 if all enclosing #if blocks were active
+	int condition_met;  // 1 if the current branch is active
+	int branch_taken;   // 1 if any branch in this #if..#endif chain has already been taken
+	int else_seen;      // 1 if #else has already been encountered at this level
 } IfFrame;
 
 static IfFrame if_stack[MAX_IF_DEPTH];
 static int if_stack_top = 0;
 
-// Helper to determine if we should currently write code lines to the output stream
 static int should_emit_code(void) {
-	for (int i = 0; i < if_stack_top; i++) {
-		if (!if_stack[i].condition_met) {
-			return 0; // If any parent block condition is false, skip execution tracking
-		}
-	}
-	return 1;
+	if (if_stack_top == 0) return 1;
+	return if_stack[if_stack_top - 1].condition_met;
 }
 
 // ------------------------------------------------------------------------
-// NEW FUNCTIONALITY: #undef IMPLEMENTATION
+// MACRO TABLE MANAGEMENT
 // ------------------------------------------------------------------------
 void undefine_macro(const char* name) {
 	MacroNode* curr = macro_head;
@@ -56,14 +48,10 @@ void undefine_macro(const char* name) {
 
 	while (curr != NULL) {
 		if (strcmp(curr->name, name) == 0) {
-			if (prev == NULL) {
-				macro_head = curr->next;
-			}
-			else {
-				prev->next = curr->next;
-			}
+			if (prev == NULL) macro_head = curr->next;
+			else prev->next = curr->next;
 			free(curr);
-			return; // Successfully unlinked and dropped from memory
+			return;
 		}
 		prev = curr;
 		curr = curr->next;
@@ -71,7 +59,6 @@ void undefine_macro(const char* name) {
 }
 
 void add_macro(const char* name, const char* replacement, int is_func, char params[MAX_PARAMS][MAX_NAME_LEN], int param_cnt) {
-	// If macro already exists, overwrite it (C89 rule)
 	undefine_macro(name);
 
 	MacroNode* node = (MacroNode*)calloc(1, sizeof(MacroNode));
@@ -101,7 +88,57 @@ MacroNode* lookup_macro(const char* name) {
 	return NULL;
 }
 
-// Helper to look up an parameter token and substitute it inside the replacement block
+void free_preprocessor_table(void) {
+	MacroNode* curr = macro_head;
+	while (curr) {
+		MacroNode* next = curr->next;
+		free(curr);
+		curr = next;
+	}
+	macro_head = NULL;
+}
+
+// ------------------------------------------------------------------------
+// LINE SPLICING (\) READER
+// ------------------------------------------------------------------------
+static int read_logical_line(FILE* src, char* out_buf, int max_len) {
+	int total = 0;
+	char phys[MAX_LINE_LEN];
+
+	if (!fgets(phys, sizeof(phys), src)) {
+		return 0; // EOF
+	}
+
+	while (1) {
+		size_t len = strlen(phys);
+		while (len > 0 && (phys[len - 1] == '\n' || phys[len - 1] == '\r')) {
+			phys[--len] = '\0';
+		}
+
+		// Check if the physical line ends with a backslash '\'
+		int has_splice = 0;
+		if (len > 0 && phys[len - 1] == '\\') {
+			phys[--len] = '\0';
+			has_splice = 1;
+		}
+
+		if (total + (int)len >= max_len - 1) {
+			len = (size_t)(max_len - 1 - total);
+		}
+		memcpy(out_buf + total, phys, len);
+		total += (int)len;
+		out_buf[total] = '\0';
+
+		if (!has_splice) break;
+		if (!fgets(phys, sizeof(phys), src)) break;
+	}
+
+	return 1;
+}
+
+// ------------------------------------------------------------------------
+// MACRO EXPANSION ENGINE
+// ------------------------------------------------------------------------
 void replace_parameters(const char* rep_body, char params[MAX_PARAMS][MAX_NAME_LEN], char args[MAX_PARAMS][MAX_LINE_LEN], int count, char* output) {
 	int i = 0, out_idx = 0;
 	int len = (int)strlen(rep_body);
@@ -116,7 +153,6 @@ void replace_parameters(const char* rep_body, char params[MAX_PARAMS][MAX_NAME_L
 			}
 			tok[t_len] = '\0';
 
-			// Check if this structural identifier is a macro parameter name
 			int matched_param_idx = -1;
 			for (int p = 0; p < count; p++) {
 				if (strcmp(params[p], tok) == 0) {
@@ -126,32 +162,31 @@ void replace_parameters(const char* rep_body, char params[MAX_PARAMS][MAX_NAME_L
 			}
 
 			if (matched_param_idx != -1) {
-				// Swap parameter out for the evaluated incoming argument text segment string
 				int arg_len = (int)strlen(args[matched_param_idx]);
 				for (int a = 0; a < arg_len; a++) {
-					output[out_idx++] = args[matched_param_idx][a];
+					if (out_idx < MAX_LINE_LEN * 2 - 1) output[out_idx++] = args[matched_param_idx][a];
 				}
 			}
 			else {
-				for (int t = 0; t < t_len; t++) output[out_idx++] = tok[t];
+				for (int t = 0; t < t_len; t++) {
+					if (out_idx < MAX_LINE_LEN * 2 - 1) output[out_idx++] = tok[t];
+				}
 			}
 		}
 		else {
-			output[out_idx++] = rep_body[i++];
+			if (out_idx < MAX_LINE_LEN * 2 - 1) output[out_idx++] = rep_body[i];
+			i++;
 		}
 	}
 	output[out_idx] = '\0';
 }
 
-// ------------------------------------------------------------------------
-// ADVANCED REWRITTEN LINE EXPANSION PIPELINE
-// ------------------------------------------------------------------------
 void expand_line(const char* input_line, char* output_line) {
 	int i = 0, out_idx = 0;
 	int line_len = (int)strlen(input_line);
 
 	while (i < line_len) {
-		if (input_line[i] == '"') { // Protect literal strings
+		if (input_line[i] == '"') {
 			output_line[out_idx++] = input_line[i++];
 			while (i < line_len && input_line[i] != '"') {
 				if (input_line[i] == '\\' && i + 1 < line_len) output_line[out_idx++] = input_line[i++];
@@ -173,9 +208,8 @@ void expand_line(const char* input_line, char* output_line) {
 
 			MacroNode* macro = lookup_macro(token_buf);
 			if (macro) {
-				// CASE A: FUNCTION-LIKE MACRO MATCHED
 				if (macro->is_function_like) {
-					// Skip any optional layout whitespace tokens to locate opening parenthesis '('
+					int save_i = i;
 					while (i < line_len && isspace((unsigned char)input_line[i])) i++;
 
 					if (i < line_len && input_line[i] == '(') {
@@ -183,7 +217,6 @@ void expand_line(const char* input_line, char* output_line) {
 						char extracted_args[MAX_PARAMS][MAX_LINE_LEN] = { 0 };
 						int arg_cnt = 0;
 
-						// Parse out arguments separated by commas, tracking matched nested brackets safely
 						while (i < line_len && input_line[i] != ')' && arg_cnt < MAX_PARAMS) {
 							while (i < line_len && isspace((unsigned char)input_line[i])) i++;
 
@@ -200,21 +233,18 @@ void expand_line(const char* input_line, char* output_line) {
 							}
 							extracted_args[arg_cnt][a_idx] = '\0';
 
-							// Trim trailing layout whitespace from parsed argument
 							while (a_idx > 0 && isspace((unsigned char)extracted_args[arg_cnt][a_idx - 1])) {
 								extracted_args[arg_cnt][--a_idx] = '\0';
 							}
 
-							if (a_idx > 0) arg_cnt++;
-							if (input_line[i] == ',') i++; // Consume comma
+							if (a_idx > 0 || input_line[i] == ',') arg_cnt++;
+							if (input_line[i] == ',') i++;
 						}
-						if (input_line[i] == ')') i++; // Consume closing ')'
+						if (input_line[i] == ')') i++;
 
-						// Inject arguments into macro replacement template string
 						char parameterized_text[MAX_LINE_LEN * 2] = { 0 };
 						replace_parameters(macro->replacement, macro->param_names, extracted_args, macro->param_count, parameterized_text);
 
-						// Recursively pass the newly expanded text through the expansion engine 
 						char recursively_expanded[MAX_LINE_LEN * 2] = { 0 };
 						expand_line(parameterized_text, recursively_expanded);
 
@@ -222,13 +252,12 @@ void expand_line(const char* input_line, char* output_line) {
 						for (int r = 0; r < final_len; r++) output_line[out_idx++] = recursively_expanded[r];
 					}
 					else {
-						// Function-like macro named without brackets used as normal text string token
+						i = save_i;
 						for (int t = 0; t < tok_len; t++) output_line[out_idx++] = token_buf[t];
 					}
 				}
 				else {
-					// CASE B: OBJECT-LIKE MACRO MATCHED
-					char expanded_replacement[MAX_LINE_LEN] = { 0 };
+					char expanded_replacement[MAX_LINE_LEN * 2] = { 0 };
 					expand_line(macro->replacement, expanded_replacement);
 					int rep_len = (int)strlen(expanded_replacement);
 					for (int r = 0; r < rep_len; r++) output_line[out_idx++] = expanded_replacement[r];
@@ -245,67 +274,383 @@ void expand_line(const char* input_line, char* output_line) {
 	output_line[out_idx] = '\0';
 }
 
-// Cleanly unlinks and frees the macro table memory when processing finishes
-void free_preprocessor_table(void) {
-	MacroNode* curr = macro_head;
-	while (curr) {
-		MacroNode* next = curr->next;
-		free(curr);
-		curr = next;
-	}
-	macro_head = NULL;
-}
-
-static void strip_line_comments(char* line) {
-	int in_str = 0;
+// ------------------------------------------------------------------------
+// #if / #elif CONSTANT EXPRESSION EVALUATOR (WITH defined() SUPPORT)
+// ------------------------------------------------------------------------
+static void strip_comments_in_expr(char* line) {
+	int in_str = 0, in_chr = 0;
 	for (int i = 0; line[i] != '\0'; i++) {
-		if (line[i] == '"' && (i == 0 || line[i - 1] != '\\')) {
-			in_str = !in_str;
+		if (!in_chr && line[i] == '"' && (i == 0 || line[i - 1] != '\\')) in_str = !in_str;
+		else if (!in_str && line[i] == '\'' && (i == 0 || line[i - 1] != '\\')) in_chr = !in_chr;
+		else if (!in_str && !in_chr) {
+			if (line[i] == '/' && line[i + 1] == '/') {
+				line[i] = '\0';
+				break;
+			}
+			if (line[i] == '/' && line[i + 1] == '*') {
+				int j = i + 2;
+				while (line[j] != '\0' && !(line[j] == '*' && line[j + 1] == '/')) j++;
+				if (line[j] == '\0') {
+					line[i] = '\0';
+					break;
+				}
+				memset(line + i, ' ', (size_t)(j + 2 - i));
+				i = j + 1;
+			}
 		}
-		else if (!in_str && line[i] == '/' && line[i + 1] == '/') {
-			line[i] = '\0';
-			break;
-		}
-	}
-	// Trim trailing whitespace left behind after stripping comment
-	size_t len = strlen(line);
-	while (len > 0 && isspace((unsigned char)line[len - 1])) {
-		line[--len] = '\0';
 	}
 }
 
-// Forward declaration to allow recursive processing for nested file insertions (#include)
-void process_file_stream(FILE* src, FILE* out);
+// Resolves `defined(IDENT)` and `defined IDENT` to `1` or `0` prior to macro expansion
+static void resolve_defined_operators(const char* src, char* dst, int max_len) {
+	int i = 0, out = 0;
+	int len = (int)strlen(src);
 
+	while (i < len && out < max_len - 2) {
+		if (src[i] == '\'' || src[i] == '"') {
+			char q = src[i];
+			dst[out++] = src[i++];
+			while (i < len && src[i] != q && out < max_len - 2) {
+				if (src[i] == '\\' && i + 1 < len) dst[out++] = src[i++];
+				dst[out++] = src[i++];
+			}
+			if (i < len && out < max_len - 2) dst[out++] = src[i++];
+			continue;
+		}
+
+		if (isalpha((unsigned char)src[i]) || src[i] == '_') {
+			int start = i;
+			char ident[MAX_NAME_LEN] = { 0 };
+			int ilen = 0;
+			while (i < len && (isalnum((unsigned char)src[i]) || src[i] == '_')) {
+				if (ilen < MAX_NAME_LEN - 1) ident[ilen++] = src[i];
+				i++;
+			}
+			ident[ilen] = '\0';
+
+			if (strcmp(ident, "defined") == 0) {
+				while (i < len && isspace((unsigned char)src[i])) i++;
+				int has_paren = 0;
+				if (i < len && src[i] == '(') {
+					has_paren = 1;
+					i++;
+					while (i < len && isspace((unsigned char)src[i])) i++;
+				}
+
+				char target[MAX_NAME_LEN] = { 0 };
+				int tlen = 0;
+				if (i < len && (isalpha((unsigned char)src[i]) || src[i] == '_')) {
+					while (i < len && (isalnum((unsigned char)src[i]) || src[i] == '_')) {
+						if (tlen < MAX_NAME_LEN - 1) target[tlen++] = src[i];
+						i++;
+					}
+				}
+				else {
+					fprintf(stderr, "Preprocessor Error: Invalid identifier after 'defined'.\n");
+					exit(1);
+				}
+				target[tlen] = '\0';
+
+				if (has_paren) {
+					while (i < len && isspace((unsigned char)src[i])) i++;
+					if (i >= len || src[i] != ')') {
+						fprintf(stderr, "Preprocessor Error: Missing ')' after defined(%s).\n", target);
+						exit(1);
+					}
+					i++; // Consume ')'
+				}
+
+				dst[out++] = (lookup_macro(target) != NULL) ? '1' : '0';
+				dst[out++] = ' ';
+			}
+			else {
+				int copy_len = i - start;
+				if (out + copy_len >= max_len - 1) copy_len = max_len - 1 - out;
+				memcpy(dst + out, src + start, (size_t)copy_len);
+				out += copy_len;
+			}
+		}
+		else {
+			dst[out++] = src[i++];
+		}
+	}
+	dst[out] = '\0';
+}
+
+typedef struct {
+	const char* p;
+} ExprParser;
+
+static void skip_ws(ExprParser* ep) {
+	while (*ep->p && isspace((unsigned char)*ep->p)) ep->p++;
+}
+
+static long parse_if_ternary(ExprParser* ep);
+
+static long parse_if_primary(ExprParser* ep) {
+	skip_ws(ep);
+
+	if (*ep->p == '(') {
+		ep->p++;
+		long val = parse_if_ternary(ep);
+		skip_ws(ep);
+		if (*ep->p != ')') {
+			fprintf(stderr, "Preprocessor Error: Missing ')' in #if expression.\n");
+			exit(1);
+		}
+		ep->p++;
+		return val;
+	}
+
+	// Character constant in #if (e.g., 'A', '\n', '\x41')
+	if (*ep->p == '\'') {
+		ep->p++;
+		long val = 0;
+		if (*ep->p == '\\') {
+			ep->p++;
+			switch (*ep->p) {
+			case 'n': val = '\n'; ep->p++; break;
+			case 'r': val = '\r'; ep->p++; break;
+			case 't': val = '\t'; ep->p++; break;
+			case '0': val = '\0'; ep->p++; break;
+			case '\\': val = '\\'; ep->p++; break;
+			case '\'': val = '\''; ep->p++; break;
+			case 'x': {
+				ep->p++;
+				while (isxdigit((unsigned char)*ep->p)) {
+					int d = isdigit((unsigned char)*ep->p) ? (*ep->p - '0') : (tolower((unsigned char)*ep->p) - 'a' + 10);
+					val = val * 16 + d;
+					ep->p++;
+				}
+				break;
+			}
+			default: val = (unsigned char)*ep->p++; break;
+			}
+		}
+		else if (*ep->p && *ep->p != '\'') {
+			val = (unsigned char)*ep->p++;
+		}
+		if (*ep->p == '\'') ep->p++;
+		return val;
+	}
+
+	// Integer constant (hex, octal, decimal + U/L suffixes)
+	if (isdigit((unsigned char)*ep->p)) {
+		char* endp = NULL;
+		unsigned long uval = strtoul(ep->p, &endp, 0);
+		ep->p = endp;
+		while (*ep->p == 'u' || *ep->p == 'U' || *ep->p == 'l' || *ep->p == 'L') {
+			ep->p++;
+		}
+		return (long)uval;
+	}
+
+	// C89 rule: Any remaining unexpanded identifier in #if evaluates to 0
+	if (isalpha((unsigned char)*ep->p) || *ep->p == '_') {
+		while (isalnum((unsigned char)*ep->p) || *ep->p == '_') ep->p++;
+		return 0;
+	}
+
+	fprintf(stderr, "Preprocessor Error: Unexpected token '%s' in #if expression.\n", ep->p);
+	exit(1);
+}
+
+static long parse_if_unary(ExprParser* ep) {
+	skip_ws(ep);
+	if (*ep->p == '!') { ep->p++; return !parse_if_unary(ep); }
+	if (*ep->p == '~') { ep->p++; return ~parse_if_unary(ep); }
+	if (*ep->p == '+') { ep->p++; return +parse_if_unary(ep); }
+	if (*ep->p == '-') { ep->p++; return -parse_if_unary(ep); }
+	return parse_if_primary(ep);
+}
+
+static long parse_if_mul(ExprParser* ep) {
+	long left = parse_if_unary(ep);
+	while (1) {
+		skip_ws(ep);
+		if (*ep->p == '*') { ep->p++; left *= parse_if_unary(ep); }
+		else if (*ep->p == '/') {
+			ep->p++;
+			long right = parse_if_unary(ep);
+			if (right == 0) { fprintf(stderr, "Preprocessor Error: Division by zero in #if.\n"); exit(1); }
+			left /= right;
+		}
+		else if (*ep->p == '%') {
+			ep->p++;
+			long right = parse_if_unary(ep);
+			if (right == 0) { fprintf(stderr, "Preprocessor Error: Modulo by zero in #if.\n"); exit(1); }
+			left %= right;
+		}
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_add(ExprParser* ep) {
+	long left = parse_if_mul(ep);
+	while (1) {
+		skip_ws(ep);
+		if (*ep->p == '+') { ep->p++; left += parse_if_mul(ep); }
+		else if (*ep->p == '-') { ep->p++; left -= parse_if_mul(ep); }
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_shift(ExprParser* ep) {
+	long left = parse_if_add(ep);
+	while (1) {
+		skip_ws(ep);
+		if (ep->p[0] == '<' && ep->p[1] == '<') { ep->p += 2; left <<= parse_if_add(ep); }
+		else if (ep->p[0] == '>' && ep->p[1] == '>') { ep->p += 2; left >>= parse_if_add(ep); }
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_rel(ExprParser* ep) {
+	long left = parse_if_shift(ep);
+	while (1) {
+		skip_ws(ep);
+		if (ep->p[0] == '<' && ep->p[1] == '=') { ep->p += 2; left = (left <= parse_if_shift(ep)); }
+		else if (ep->p[0] == '>' && ep->p[1] == '=') { ep->p += 2; left = (left >= parse_if_shift(ep)); }
+		else if (ep->p[0] == '<' && ep->p[1] != '<') { ep->p += 1; left = (left < parse_if_shift(ep)); }
+		else if (ep->p[0] == '>' && ep->p[1] != '>') { ep->p += 1; left = (left > parse_if_shift(ep)); }
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_eq(ExprParser* ep) {
+	long left = parse_if_rel(ep);
+	while (1) {
+		skip_ws(ep);
+		if (ep->p[0] == '=' && ep->p[1] == '=') { ep->p += 2; left = (left == parse_if_rel(ep)); }
+		else if (ep->p[0] == '!' && ep->p[1] == '=') { ep->p += 2; left = (left != parse_if_rel(ep)); }
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_bitand(ExprParser* ep) {
+	long left = parse_if_eq(ep);
+	while (1) {
+		skip_ws(ep);
+		if (ep->p[0] == '&' && ep->p[1] != '&') { ep->p += 1; left &= parse_if_eq(ep); }
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_bitxor(ExprParser* ep) {
+	long left = parse_if_bitand(ep);
+	while (1) {
+		skip_ws(ep);
+		if (*ep->p == '^') { ep->p += 1; left ^= parse_if_bitand(ep); }
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_bitor(ExprParser* ep) {
+	long left = parse_if_bitxor(ep);
+	while (1) {
+		skip_ws(ep);
+		if (ep->p[0] == '|' && ep->p[1] != '|') { ep->p += 1; left |= parse_if_bitxor(ep); }
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_logand(ExprParser* ep) {
+	long left = parse_if_bitor(ep);
+	while (1) {
+		skip_ws(ep);
+		if (ep->p[0] == '&' && ep->p[1] == '&') {
+			ep->p += 2;
+			long right = parse_if_bitor(ep);
+			left = (left != 0 && right != 0);
+		}
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_logor(ExprParser* ep) {
+	long left = parse_if_logand(ep);
+	while (1) {
+		skip_ws(ep);
+		if (ep->p[0] == '|' && ep->p[1] == '|') {
+			ep->p += 2;
+			long right = parse_if_logand(ep);
+			left = (left != 0 || right != 0);
+		}
+		else break;
+	}
+	return left;
+}
+
+static long parse_if_ternary(ExprParser* ep) {
+	long cond = parse_if_logor(ep);
+	skip_ws(ep);
+	if (*ep->p == '?') {
+		ep->p++;
+		long t_val = parse_if_ternary(ep);
+		skip_ws(ep);
+		if (*ep->p != ':') {
+			fprintf(stderr, "Preprocessor Error: Expected ':' in #if ternary expression.\n");
+			exit(1);
+		}
+		ep->p++;
+		long f_val = parse_if_ternary(ep);
+		return cond ? t_val : f_val;
+	}
+	return cond;
+}
+
+static int evaluate_if_expression(const char* raw_expr) {
+	char clean_expr[MAX_LINE_LEN] = { 0 };
+	strncpy(clean_expr, raw_expr, MAX_LINE_LEN - 1);
+	strip_comments_in_expr(clean_expr);
+
+	char def_resolved[MAX_LINE_LEN * 2] = { 0 };
+	resolve_defined_operators(clean_expr, def_resolved, sizeof(def_resolved));
+
+	char expanded[MAX_LINE_LEN * 2] = { 0 };
+	expand_line(def_resolved, expanded);
+
+	ExprParser ep = { expanded };
+	long result = parse_if_ternary(&ep);
+	skip_ws(&ep);
+	if (*ep.p != '\0') {
+		fprintf(stderr, "Preprocessor Error: Trailing tokens '%s' in #if expression.\n", ep.p);
+		exit(1);
+	}
+	return (result != 0);
+}
+
+// ------------------------------------------------------------------------
+// FILE STREAM DIRECTIVE & LINE PROCESSOR
+// ------------------------------------------------------------------------
 void process_file_stream(FILE* src, FILE* out) {
 	char line_buffer[MAX_LINE_LEN];
 
-	while (fgets(line_buffer, sizeof(line_buffer), src)) {
-		// Clean trailing transitions perfectly
-		size_t len = strlen(line_buffer);
-		while (len > 0 && (line_buffer[len - 1] == '\n' || line_buffer[len - 1] == '\r')) {
-			line_buffer[--len] = '\0';
-		}
-
-		// Trim leading spaces
+	while (read_logical_line(src, line_buffer, sizeof(line_buffer))) {
 		char* walk = line_buffer;
-		while (*walk && isspace((unsigned char)*walk)) {
-			walk++;
-		}
+		while (*walk && isspace((unsigned char)*walk)) walk++;
 
 		if (*walk == '#') {
 			walk++; // Step past '#'
 			while (*walk && isspace((unsigned char)*walk)) walk++;
 
-			// Extract the directive keyword cleanly
 			char directive[16] = { 0 };
 			int chars_read = 0;
 			if (sscanf(walk, "%15s%n", directive, &chars_read) != 1) {
 				continue;
 			}
-			walk += chars_read; // Advance past the directive word safely
+			walk += chars_read;
 
-			// 1. HANDLE INCLUDE DIRECTIVE
+			// 1. #include
 			if (strcmp(directive, "include") == 0) {
 				if (!should_emit_code()) continue;
 
@@ -315,7 +660,7 @@ void process_file_stream(FILE* src, FILE* out) {
 					char* end_quote = strchr(start_quote, '"');
 					if (end_quote) {
 						char header_filename[MAX_NAME_LEN] = { 0 };
-						size_t name_len = end_quote - start_quote;
+						size_t name_len = (size_t)(end_quote - start_quote);
 						if (name_len < MAX_NAME_LEN) {
 							strncpy(header_filename, start_quote, name_len);
 
@@ -333,50 +678,82 @@ void process_file_stream(FILE* src, FILE* out) {
 				continue;
 			}
 
-			// 2. HANDLE IFDEF
+			// 2. #if
+			if (strcmp(directive, "if") == 0) {
+				if (if_stack_top >= MAX_IF_DEPTH) {
+					fprintf(stderr, "Preprocessor Error: Conditional nesting overflow.\n");
+					exit(1);
+				}
+				int parent_ok = should_emit_code();
+				int cond = parent_ok ? evaluate_if_expression(walk) : 0;
+				if_stack[if_stack_top++] = (IfFrame){ parent_ok, cond, cond, 0 };
+				continue;
+			}
+
+			// 3. #ifdef
 			if (strcmp(directive, "ifdef") == 0) {
+				if (if_stack_top >= MAX_IF_DEPTH) exit(1);
 				char target_macro[MAX_NAME_LEN] = { 0 };
 				sscanf(walk, "%63s", target_macro);
-				if (if_stack_top >= MAX_IF_DEPTH) exit(1);
-				int exists = (lookup_macro(target_macro) != NULL);
-				if_stack[if_stack_top++] = (IfFrame){ exists, 0 };
+				int parent_ok = should_emit_code();
+				int cond = parent_ok ? (lookup_macro(target_macro) != NULL) : 0;
+				if_stack[if_stack_top++] = (IfFrame){ parent_ok, cond, cond, 0 };
 				continue;
 			}
 
-			// 3. HANDLE IFNDEF
+			// 4. #ifndef
 			if (strcmp(directive, "ifndef") == 0) {
+				if (if_stack_top >= MAX_IF_DEPTH) exit(1);
 				char target_macro[MAX_NAME_LEN] = { 0 };
 				sscanf(walk, "%63s", target_macro);
-				if (if_stack_top >= MAX_IF_DEPTH) exit(1);
-				int not_exists = (lookup_macro(target_macro) == NULL);
-				if_stack[if_stack_top++] = (IfFrame){ not_exists, 0 };
+				int parent_ok = should_emit_code();
+				int cond = parent_ok ? (lookup_macro(target_macro) == NULL) : 0;
+				if_stack[if_stack_top++] = (IfFrame){ parent_ok, cond, cond, 0 };
 				continue;
 			}
 
-			// 4. HANDLE ELSE
+			// 5. #elif
+			if (strcmp(directive, "elif") == 0) {
+				if (if_stack_top == 0 || if_stack[if_stack_top - 1].else_seen) {
+					fprintf(stderr, "Preprocessor Error: Misplaced #elif.\n");
+					exit(1);
+				}
+				IfFrame* top = &if_stack[if_stack_top - 1];
+				if (top->parent_active && !top->branch_taken) {
+					int cond = evaluate_if_expression(walk);
+					top->condition_met = cond;
+					if (cond) top->branch_taken = 1;
+				}
+				else {
+					top->condition_met = 0;
+				}
+				continue;
+			}
+
+			// 6. #else
 			if (strcmp(directive, "else") == 0) {
 				if (if_stack_top == 0 || if_stack[if_stack_top - 1].else_seen) {
 					fprintf(stderr, "Preprocessor Error: Misplaced or duplicate #else.\n");
 					exit(1);
 				}
-				if_stack[if_stack_top - 1].else_seen = 1;
-				if_stack[if_stack_top - 1].condition_met = !if_stack[if_stack_top - 1].condition_met;
+				IfFrame* top = &if_stack[if_stack_top - 1];
+				top->else_seen = 1;
+				top->condition_met = (top->parent_active && !top->branch_taken);
+				top->branch_taken = 1;
 				continue;
 			}
 
-			// 5. HANDLE ENDIF
+			// 7. #endif
 			if (strcmp(directive, "endif") == 0) {
-				if (if_stack_top == 0) exit(1);
+				if (if_stack_top == 0) {
+					fprintf(stderr, "Preprocessor Error: Unmatched #endif.\n");
+					exit(1);
+				}
 				if_stack_top--;
 				continue;
 			}
 
-			// 6. HANDLE DEFINE
-// ------------------------------------------------------------------------
-// Drop-in updates for Directive Parsing inside process_file_stream:
-// ------------------------------------------------------------------------
-
-// HANDLE #undef DIRECTIVE
+			// 8. #undef
 			if (strcmp(directive, "undef") == 0) {
 				if (!should_emit_code()) continue;
 				char macro_to_drop[MAX_NAME_LEN] = { 0 };
@@ -385,31 +762,30 @@ void process_file_stream(FILE* src, FILE* out) {
 				continue;
 			}
 
-			// REWRITTEN ENHANCED #define DIRECTIVE
+			// 9. #define
 			if (strcmp(directive, "define") == 0) {
 				if (!should_emit_code()) continue;
 
 				while (*walk && isspace((unsigned char)*walk)) walk++;
 
 				char m_name[MAX_NAME_LEN] = { 0 };
-				int chars_read = 0;
-				sscanf(walk, "%63[^ (]%n", m_name, &chars_read);
-				walk += chars_read;
+				int n_read = 0;
+				sscanf(walk, "%63[^ (]%n", m_name, &n_read);
+				walk += n_read;
 
 				int is_func = 0;
 				char params[MAX_PARAMS][MAX_NAME_LEN] = { 0 };
 				int param_cnt = 0;
 
-				// Look for an immediate opening parenthesis (no spaces allowed for function-like macros!)
 				if (*walk == '(') {
 					is_func = 1;
-					walk++; // Step past '('
+					walk++;
 					while (*walk && *walk != ')') {
 						while (*walk && (isspace((unsigned char)*walk) || *walk == ',')) walk++;
 						if (*walk && *walk != ')') {
 							char p_name[MAX_NAME_LEN] = { 0 };
-							sscanf(walk, "%63[A-Za-z0-9_]%n", p_name, &chars_read);
-							walk += chars_read;
+							sscanf(walk, "%63[A-Za-z0-9_]%n", p_name, &n_read);
+							walk += n_read;
 							if (strlen(p_name) > 0 && param_cnt < MAX_PARAMS) {
 								strcpy(params[param_cnt++], p_name);
 							}
@@ -420,7 +796,7 @@ void process_file_stream(FILE* src, FILE* out) {
 
 				char m_val[MAX_LINE_LEN] = { 0 };
 				while (*walk && isspace((unsigned char)*walk)) walk++;
-				strcpy(m_val, walk); // The remainder of the line forms the substitution value template
+				strncpy(m_val, walk, MAX_LINE_LEN - 1);
 
 				add_macro(m_name, m_val, is_func, params, param_cnt);
 				continue;
@@ -429,7 +805,6 @@ void process_file_stream(FILE* src, FILE* out) {
 			continue;
 		}
 
-		// Emit text only if condition stack is valid
 		if (should_emit_code()) {
 			char processed_line[MAX_LINE_LEN * 2] = { 0 };
 			expand_line(line_buffer, processed_line);
@@ -438,7 +813,6 @@ void process_file_stream(FILE* src, FILE* out) {
 	}
 }
 
-// Global invocation entry routine
 int run_preprocessor(const char* input_filename, const char* output_filename) {
 	FILE* src = fopen(input_filename, "r");
 	if (!src) {
@@ -451,17 +825,17 @@ int run_preprocessor(const char* input_filename, const char* output_filename) {
 		fclose(src);
 		return 0;
 	}
-	// Reset processing parameters
+
 	if_stack_top = 0;
-	// Run processing pass
 	process_file_stream(src, out);
-	// Enforce C89 file block balance restrictions
+
 	if (if_stack_top > 0) {
 		fprintf(stderr, "Preprocessor Error: Unclosed conditional compilation block. Missing #endif.\n");
 		fclose(src);
 		fclose(out);
 		return 0;
 	}
+
 	fclose(src);
 	fclose(out);
 	free_preprocessor_table();
