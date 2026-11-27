@@ -551,17 +551,6 @@ ASTNode* parse_postfix(void) {
 	return n;
 }
 
-// Forward declaration helper to check if a parenthesized block is a cast
-static int is_cast_expression(void) {
-	// We need to look ahead without permanently consuming tokens. 
-	// Since our lexer doesn't support generic infinite rollback, we check if 
-	// cur_tok is '(' and the next token is a valid type identifier.
-	// However, since we already have 'is_type_name', we can look at the sequence.
-	// If your lexer structure allows simple lookahead, implement it here.
-	// For a standard predictive parser, we can check if it's an explicit cast:
-	return (cur_tok.type == TOKEN_LPAREN);
-}
-
 ASTNode* parse_unary(void) {
 	// --- ENHANCED TYPE CAST DETECTION FOR VARIADIC SUPPORT ---
 	// --- EXPLICIT TYPE CAST DETECTION ---
@@ -620,8 +609,12 @@ ASTNode* parse_unary(void) {
 		else {
 			ASTNode* expr_node = parse_expr();
 
+			// String literals have array type char[len + 1] in C89 (includes '\0')
+			if (expr_node->kind == AST_LITERAL && expr_node->type.kind == TYPE_POINTER) {
+				size_result = expr_node->int_val + 1;
+			}
 			// If it's a plain variable identifier, pull details from the symbol table
-			if (expr_node->kind == AST_IDENT) {
+			else if (expr_node->kind == AST_IDENT) {
 				Symbol* sym = lookup_symbol(expr_node->name);
 				if (sym) {
 					size_result = get_type_size(sym->type);
@@ -634,7 +627,6 @@ ASTNode* parse_unary(void) {
 			else if (expr_node->kind == AST_MEMBER_ACCESS) {
 				DataType out_type;
 				int total_offset = 0;
-				// Use your existing member offset resolver tool to capture the type
 				resolve_member_offset(expr_node, &total_offset, &out_type);
 				size_result = get_type_size(out_type);
 			}
@@ -643,7 +635,6 @@ ASTNode* parse_unary(void) {
 				size_result = get_type_size(expr_node->type);
 			}
 
-			// Free the parsed expression sub-tree since it isn't compiled to assembly
 			free(expr_node);
 		}
 

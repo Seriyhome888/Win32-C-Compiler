@@ -591,6 +591,15 @@ void test_sizeof() {
 	if (sizeof(normal_bob) == 12) printf("sizeof(normal_bob) PASSED\n"); else printf("sizeof(normal_bob) FAILED\n");
 	if (sizeof(normal_bob.age) == 4) printf("sizeof(normal_bob.age) PASSED\n"); else printf("sizeof(normal_bob.age) FAILED\n");
 
+	// 6. String Literal Size Tests (includes null terminator)
+	char* str_ptr = "str";
+	if (sizeof("str") == 4 && sizeof("") == 1 && sizeof("A\nB\0C") == 6 && sizeof(str_ptr) == 4) {
+		printf("sizeof(string literal) PASSED\n");
+	}
+	else {
+		printf("sizeof(string literal) FAILED\n");
+	}
+
 	printf("--- ENDING SIZEOF COMPILE-TIME VERIFICATION ---\n");
 }
 
